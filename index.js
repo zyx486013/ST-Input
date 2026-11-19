@@ -1,3 +1,4 @@
+import { completeWithSillyTavern } from './connections.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
 
 const KEY = 'st-input';
@@ -46,25 +47,7 @@ async function complete(messages, connection, profileId, signal, maxTokens = 160
     if (connection === 'custom') {
         return (await service('generate', { method: 'POST', data: { messages }, signal })).text;
     }
-    const st = context();
-    if (connection === 'profile' && (!st.ConnectionManagerRequestService || !profileId)) {
-        throw new Error('请先选择一条 SillyTavern 连接配置。');
-    }
-    try {
-        if (connection === 'profile') {
-            const result = await st.ConnectionManagerRequestService.sendRequest(profileId, messages, maxTokens, {
-                stream: false, extractData: true, includePreset: false, signal,
-            });
-            return result.content;
-        }
-        return await st.generateRaw({ prompt: messages, trimNames: false });
-    } catch (error) {
-        if (signal?.aborted) throw error;
-        if (connection === 'profile') {
-            throw new Error('指定连接调用失败。请在 SillyTavern 中核对该连接的模型、地址和 Key。');
-        }
-        throw new Error('当前聊天连接调用失败。请在 SillyTavern 的 API 连接中检查设置。');
-    }
+    return completeWithSillyTavern(context(), messages, connection, profileId, signal, maxTokens);
 }
 
 function mount() {
