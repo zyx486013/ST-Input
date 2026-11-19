@@ -133,3 +133,14 @@
     resize: vertical;
     box-sizing: border-box;
 }
+
+#st-input-panel .st-input-logic-evidence {
+    margin: 0.4em 0;
+    padding-inline-start: 0.65em;
+    border-inline-start: 2px solid var(--SmartThemeBorderColor, #696969);
+}
+
+#st-input-panel .st-input-logic-evidence p,
+#st-input-panel .st-input-logic-note {
+    margin: 0.3em 0;
+}

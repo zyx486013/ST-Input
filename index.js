@@ -1,4 +1,5 @@
 import { completeWithSillyTavern } from './connections.js';
+import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
 
 const KEY = 'st-input';
@@ -141,7 +142,7 @@ function mount() {
     });
     undo.hidden = true;
 
-    for (const [mode, label] of Object.entries(MODES)) {
+    for (const [mode, label] of Object.entries({ ...MODES, [LOGIC_MODE]: LOGIC_LABEL })) {
         const action = button(label, () => start(mode));
         action.dataset.mode = mode;
         ui.actions.append(action);
@@ -155,6 +156,12 @@ function mount() {
         textarea.value = value;
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
         textarea.focus();
+    }
+
+    function replaceDraft(value) {
+        undoDraft = { previous: textarea.value, inserted: value };
+        writeDraft(value);
+        undo.hidden = false;
     }
 
     function setOpen(open) {
@@ -229,9 +236,14 @@ function mount() {
     }
 
     function getSource(mode) {
-        const history = config.history ? getChatMessages(context().chat) : [];
-        const pinned = ui.reference.value ? Number(ui.reference.value) : undefined;
-        return { mode, draft: textarea.value, history, historyCount: config.historyCount, pinned };
+        const history = config.history || mode === LOGIC_MODE ? getChatMessages(context().chat) : [];
+        const pinned = config.history && ui.reference.value ? Number(ui.reference.value) : undefined;
+        return { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
+    }
+
+    function buildRequest(source, answers, final) {
+        if (source.mode === LOGIC_MODE) return prepareLogicCheck(source);
+        return { prompt: buildPrompt({ ...source, answers, final }) };
     }
 
     function showPrompt(prompt) {
@@ -243,7 +255,7 @@ function mount() {
         try {
             const mode = ui['preview-mode'].value;
             const prompt = lastPrompt?.mode === mode && lastPrompt.draft === textarea.value
-                ? lastPrompt.messages : buildPrompt(getSource(mode));
+                ? lastPrompt.messages : buildRequest(getSource(mode)).prompt;
             showPrompt(prompt);
         } catch (error) {
             ui['preview-content'].textContent = error.message;
@@ -263,14 +275,21 @@ function mount() {
         lastPrompt = undefined;
         setStatus('');
         try {
-            const prompt = buildPrompt({ ...source, answers, final });
+            const request = buildRequest(source, answers, final);
+            const { prompt, target } = request;
             lastPrompt = { mode: source.mode, draft: source.draft, messages: prompt };
             showPrompt(prompt);
             pending = { controller: new AbortController() };
             updateBusy();
             setStatus('正在处理…');
-            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal);
+            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, target ? 2400 : undefined);
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
+            if (target) {
+                setStatus('');
+                if (logicTargetChanged(target)) return;
+                renderLogicFindings(parseLogicFindings(result, request), target);
+                return;
+            }
             setStatus(textarea.value === source.draft ? '' : '输入框已有新编辑。建议保留在面板中供你预览。');
             renderResult(parseResult(result, source.mode, final), source);
         } catch (error) {
@@ -279,6 +298,48 @@ function mount() {
             pending = undefined;
             updateBusy();
         }
+    }
+
+    function logicTargetChanged(target) {
+        const latest = latestModelReply(getChatMessages(context().chat));
+        if (latest?.index === target.index && latest.text === target.text) return false;
+        setStatus('最新回复已变化，请重新检查。');
+        return true;
+    }
+
+    function renderLogicFindings(findings, target) {
+        if (!findings.length) {
+            ui.result.replaceChildren(element('p', '这次检查未发现可定位的逻辑问题。'));
+            return;
+        }
+        const insert = selected => {
+            if (logicTargetChanged(target)) return;
+            const draft = appendLogicFindings(textarea.value, selected);
+            if (draft === textarea.value) {
+                setStatus('当前草稿已包含这些修正要求。');
+                return;
+            }
+            replaceDraft(draft);
+            setStatus('已加入输入框，可编辑或恢复原稿。');
+        };
+        const stack = element('div', null, 'st-input-config');
+        for (const finding of findings) {
+            const group = element('fieldset', null, 'st-input-question');
+            group.append(element('legend', finding.category));
+            for (const { role, id, quote } of finding.evidence) {
+                const excerpt = element('blockquote', null, 'st-input-logic-evidence');
+                excerpt.append(element('small', `${role} #${id}`), element('p', quote));
+                group.append(excerpt);
+            }
+            group.append(
+                element('p', finding.issue, 'st-input-logic-note'),
+                element('p', finding.followup, 'st-input-logic-note'),
+                button('加入草稿', () => insert([finding])),
+            );
+            stack.append(group);
+        }
+        if (findings.length > 1) stack.append(button('全部加入草稿', () => insert(findings)));
+        ui.result.replaceChildren(stack);
     }
 
     function renderDraft(value, source) {
@@ -296,9 +357,7 @@ function mount() {
                 setStatus('输入框已有新编辑。再次点击即可替换。');
                 return;
             }
-            undoDraft = { previous: textarea.value, inserted: edited.value };
-            writeDraft(edited.value);
-            undo.hidden = false;
+            replaceDraft(edited.value);
             ui.result.replaceChildren();
             setStatus('已填入输入框。');
         });
