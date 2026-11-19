@@ -133,3 +133,25 @@
     resize: vertical;
     box-sizing: border-box;
 }
+
+#st-input-panel .st-input-evidence {
+    margin: 0.3em 0;
+    padding-inline-start: 0.55em;
+    border-inline-start: 2px solid var(--SmartThemeBorderColor, #696969);
+    white-space: pre-wrap;
+}
+
+#st-input-panel .st-input-guide {
+    padding-block: 0.4em;
+    border-block-end: 1px solid var(--SmartThemeBorderColor, #696969);
+    overflow-wrap: anywhere;
+}
+
+#st-input-panel .st-input-question p,
+#st-input-panel .st-input-guide p {
+    margin: 0.35em 0;
+}
+
+#st-input-panel .st-input-guidance-text {
+    font-weight: 600;
+}

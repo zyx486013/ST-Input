@@ -1,5 +1,6 @@
 import { completeWithSillyTavern } from './connections.js';
-import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
+import { buildPrompt, getChatMessages, latestReply, MAX_DRAFT, MODES, parseResult } from './prompts.js';
+import { appendGuidance, GUIDANCE_KEY, readGuidance, saveGuide } from './writing-guidance.js';
 
 const KEY = 'st-input';
 const SERVICE = '/api/plugins/st-input';
@@ -80,6 +81,17 @@ function mount() {
         </details>
         <div role="status" aria-live="polite" class="st-input-status" data-st="status"></div>
         <div data-st="result"></div>
+        <details data-st="guidance" hidden>
+            <summary data-st="guidance-title">写作指导</summary>
+            <div class="st-input-config">
+                <div data-st="guidance-list"></div>
+                <label><input type="checkbox" data-st="guidance-enabled"> 整理和追问时附到建议草稿</label>
+                <div class="st-input-actions">
+                    <button class="menu_button" type="button" data-st="insert-guides">把指导加入输入框</button>
+                    <button class="menu_button" type="button" data-st="insert-issues">指出问题并加入指导</button>
+                </div>
+            </div>
+        </details>
         <details data-st="settings">
             <summary>连接设置</summary>
             <div class="st-input-config">
@@ -118,6 +130,7 @@ function mount() {
 
     let pending;
     let checking = false;
+    let savingGuidance = false;
     let revision = 0;
     let undoDraft;
     let customConfig;
@@ -157,11 +170,18 @@ function mount() {
         textarea.focus();
     }
 
+    function replaceDraft(value) {
+        undoDraft = { previous: textarea.value, inserted: value };
+        writeDraft(value);
+        undo.hidden = false;
+    }
+
     function setOpen(open) {
         panel.hidden = !open;
         launch.setAttribute('aria-expanded', String(open));
         if (open) {
             refreshReferences();
+            renderGuidance();
             refreshProfiles();
             renderConnection();
             if (config.connection === 'custom' && !customConfig) loadCustom();
@@ -229,9 +249,14 @@ function mount() {
     }
 
     function getSource(mode) {
-        const history = config.history ? getChatMessages(context().chat) : [];
+        const st = context();
+        const history = config.history || mode === 'review' ? getChatMessages(st.chat) : [];
         const pinned = ui.reference.value ? Number(ui.reference.value) : undefined;
-        return { mode, draft: textarea.value, history, historyCount: config.historyCount, pinned };
+        const guidance = readGuidance(st.chatMetadata);
+        return {
+            mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0,
+            pinned: config.history ? pinned : undefined, guidance: guidance.enabled ? guidance.items : [],
+        };
     }
 
     function showPrompt(prompt) {
@@ -269,10 +294,18 @@ function mount() {
             pending = { controller: new AbortController() };
             updateBusy();
             setStatus('正在处理…');
-            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal);
+            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, source.mode === 'review' ? 2400 : undefined);
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
-            setStatus(textarea.value === source.draft ? '' : '输入框已有新编辑。建议保留在面板中供你预览。');
-            renderResult(parseResult(result, source.mode, final), source);
+            const reviewed = source.mode === 'review' ? latestReply(source.history) : null;
+            if (reviewed) {
+                const current = latestReply(getChatMessages(context().chat));
+                if (current?.index !== reviewed.index || current.text !== reviewed.text) {
+                    setStatus('最新回复已变化，请重新分析。');
+                    return;
+                }
+            }
+            setStatus(reviewed || textarea.value === source.draft ? '' : '输入框已有新编辑。建议保留在面板中供你预览。');
+            renderResult(parseResult(result, source.mode, final, reviewed?.text), source);
         } catch (error) {
             if (currentRevision === revision) setStatus(error.message);
         } finally {
@@ -284,7 +317,7 @@ function mount() {
     function renderDraft(value, source) {
         const label = element('label', '建议草稿');
         const edited = element('textarea', null, 'text_pole st-input-draft');
-        edited.value = value;
+        edited.value = appendGuidance(value, source.guidance);
         edited.maxLength = MAX_DRAFT;
         edited.rows = 4;
         label.append(edited);
@@ -296,9 +329,7 @@ function mount() {
                 setStatus('输入框已有新编辑。再次点击即可替换。');
                 return;
             }
-            undoDraft = { previous: textarea.value, inserted: edited.value };
-            writeDraft(edited.value);
-            undo.hidden = false;
+            replaceDraft(edited.value);
             ui.result.replaceChildren();
             setStatus('已填入输入框。');
         });
@@ -307,6 +338,10 @@ function mount() {
     }
 
     function renderResult(result, source) {
+        if (result.review) {
+            renderReview(result.review);
+            return;
+        }
         if (result.draft) {
             renderDraft(result.draft, source);
             return;
@@ -346,6 +381,92 @@ function mount() {
             void run(source, answers, true);
         }));
         ui.result.replaceChildren(stack);
+    }
+
+    function renderReview(review) {
+        if (!review.length) {
+            ui.result.replaceChildren(element('p', '这次分析未发现明确影响阅读的问题。'));
+            return;
+        }
+        const list = element('div', null, 'st-input-config');
+        for (const item of review) {
+            const group = element('fieldset', null, 'st-input-question');
+            const quote = element('blockquote', item.evidence, 'st-input-evidence');
+            const save = button('保存指导', () => {
+                void updateGuidance(state => saveGuide(state, item), '已保存到当前聊天的写作指导。');
+                ui.guidance.open = true;
+            });
+            save.dataset.guide = item.guidance;
+            group.append(element('legend', item.category), quote, element('p', item.issue),
+                element('p', item.guidance, 'st-input-guidance-text'), save);
+            list.append(group);
+        }
+        ui.result.replaceChildren(list);
+        renderGuidance();
+    }
+
+    function renderGuidance() {
+        const { enabled, items } = readGuidance(context().chatMetadata);
+        ui.guidance.hidden = !items.length;
+        ui['guidance-enabled'].checked = enabled;
+        ui['guidance-enabled'].disabled = savingGuidance;
+        ui['guidance-title'].textContent = `写作指导（${items.length}）`;
+        const rows = items.map(item => {
+            const row = element('div', null, 'st-input-guide');
+            const remove = button('移除', () => {
+                void updateGuidance(state => ({
+                    ...state, items: state.items.filter(value => value.guidance !== item.guidance),
+                }), '已移除这条指导。');
+            });
+            remove.disabled = savingGuidance;
+            remove.setAttribute('aria-label', `移除指导：${item.guidance}`);
+            row.append(element('p', item.guidance, 'st-input-guidance-text'), element('p', `${item.category} · ${item.issue}`), remove);
+            return row;
+        });
+        ui['guidance-list'].replaceChildren(...rows);
+        for (const save of ui.result.querySelectorAll('[data-guide]')) {
+            const saved = items.some(item => item.guidance === save.dataset.guide);
+            save.disabled = saved || savingGuidance;
+            save.textContent = saved ? '已保存' : '保存指导';
+        }
+    }
+
+    async function updateGuidance(update, message = '') {
+        if (savingGuidance) return;
+        const st = context();
+        const metadata = st.chatMetadata;
+        if (!st.getCurrentChatId() || !metadata) {
+            setStatus('请先打开一条聊天，再保存写作指导。');
+            return;
+        }
+        const previous = metadata[GUIDANCE_KEY];
+        try {
+            const next = update(readGuidance(metadata));
+            savingGuidance = true;
+            metadata[GUIDANCE_KEY] = next;
+            renderGuidance();
+            await st.saveMetadata();
+            if (context().chatMetadata === metadata && message) setStatus(message);
+        } catch (error) {
+            if (context().chatMetadata === metadata) {
+                if (previous === undefined) delete metadata[GUIDANCE_KEY];
+                else metadata[GUIDANCE_KEY] = previous;
+                setStatus(error.message);
+            }
+        } finally {
+            savingGuidance = false;
+            renderGuidance();
+        }
+    }
+
+    function insertGuidance(includeIssues) {
+        const draft = appendGuidance(textarea.value, readGuidance(context().chatMetadata).items, includeIssues);
+        if (draft === textarea.value) {
+            setStatus('当前草稿已包含这些指导。');
+            return;
+        }
+        replaceDraft(draft);
+        setStatus('已加入输入框，可编辑或恢复原稿。');
     }
 
     function customForm() {
@@ -418,6 +539,11 @@ function mount() {
     textarea.addEventListener('input', () => {
         if (!panel.hidden && !pending && !ui.result.childElementCount) refreshPreview();
     });
+    ui['guidance-enabled'].addEventListener('change', () => {
+        void updateGuidance(state => ({ ...state, enabled: ui['guidance-enabled'].checked }));
+    });
+    ui['insert-guides'].addEventListener('click', () => insertGuidance(false));
+    ui['insert-issues'].addEventListener('click', () => insertGuidance(true));
 
     ui.connection.value = config.connection;
     ui.connection.addEventListener('change', () => {
@@ -469,6 +595,8 @@ function mount() {
         undoDraft = undefined;
         undo.hidden = true;
         ui.reference.value = '';
+        ui.guidance.open = false;
+        renderGuidance();
         if (!panel.hidden) refreshReferences();
         clearRequest();
     });
