@@ -130,7 +130,7 @@ function mount() {
     launch.id = 'st-input-launch';
     launch.setAttribute('aria-controls', panel.id);
     launch.setAttribute('aria-expanded', 'false');
-    anchor.prepend(launch);
+    anchor.before(launch);
     form.prepend(panel);
 
     let pending;
@@ -175,19 +175,19 @@ function mount() {
     }
 
     function setOpen(open) {
+        panel.hidden = !open;
+        launch.setAttribute('aria-expanded', String(open));
         if (open) {
             refreshReferences();
             refreshProfiles();
             renderConnection();
             if (config.connection === 'custom' && !customConfig) loadCustom();
+            ui.actions.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
         } else {
             ui.key.value = '';
             ui['clear-key'].checked = false;
+            launch.focus({ preventScroll: true });
         }
-        panel.hidden = !open;
-        launch.setAttribute('aria-expanded', String(open));
-        if (open) ui.actions.querySelector('button:not(:disabled)')?.focus();
-        else launch.focus();
     }
 
     function refreshReferences() {

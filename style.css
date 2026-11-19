@@ -4,6 +4,8 @@
 }
 
 #st-input-launch {
+    order: 3;
+    flex: 0 0 auto;
     width: auto;
     white-space: nowrap;
     font-size: 0.8em;
@@ -13,14 +15,14 @@
 }
 
 #st-input-panel {
-    position: absolute;
-    z-index: 5;
-    bottom: calc(100% + 0.4rem);
-    right: 0;
+    /* Stay in the composer layout when SillyTavern disables backdrop filters. */
+    order: 24;
     display: grid;
     gap: 0.55em;
     width: min(100%, 40rem);
-    max-height: min(64dvh, 32rem);
+    max-height: min(48dvh, 28rem);
+    margin-inline-start: auto;
+    margin-block-end: 0.4rem;
     overflow: auto;
     overscroll-behavior: contain;
     box-sizing: border-box;
@@ -33,6 +35,7 @@
     color: var(--SmartThemeBodyColor, #eee);
     font-size: 0.9em;
     text-align: start;
+    white-space: normal;
 }
 
 #st-input-panel .st-input-bar,
