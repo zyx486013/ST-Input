@@ -33,8 +33,9 @@ export function getChatMessages(chat = []) {
     });
 }
 
-function serialize(message, limit = MAX_RECORD) {
+export function serializeMessage(message, limit = MAX_RECORD, includeId = false) {
     const metadata = {
+        id: includeId ? message.index + 1 : undefined,
         role: message.role,
         name: message.name,
     };
@@ -60,10 +61,10 @@ export function buildPrompt({ mode, draft, history, historyCount, pinned, answer
     if (mode === 'followup' && !target) throw new Error('请开启聊天上下文，并等待一条模型回复。');
 
     let budget = MAX_CONTEXT;
-    const targetText = target ? serialize(target) : '';
+    const targetText = target ? serializeMessage(target) : '';
     budget -= targetText.length;
     if (reference) {
-        const referenceText = serialize(reference);
+        const referenceText = serializeMessage(reference);
         sections.push(`【指定参考消息】\n${referenceText}`);
         budget -= referenceText.length;
     }
@@ -72,7 +73,7 @@ export function buildPrompt({ mode, draft, history, historyCount, pinned, answer
     for (const message of (historyCount ? history.slice(-historyCount).reverse() : [])) {
         if (budget < 150) break;
         if (message === target || message === reference) continue;
-        const line = serialize(message, Math.min(MAX_RECORD, budget - 1));
+        const line = serializeMessage(message, Math.min(MAX_RECORD, budget - 1));
         if (line.length >= budget) break;
         recent.unshift(line);
         budget -= line.length + 1;
@@ -99,11 +100,15 @@ function cleanStrings(values, maxItems, maxLength) {
     return [...new Set(strings)].slice(0, maxItems).map(value => clipped(value, maxLength));
 }
 
-export function parseResult(input, mode, final = false) {
+export function jsonCandidate(input) {
     if (typeof input !== 'string' || !input.trim()) throw new Error('模型返回了空结果。');
     const text = input.trim();
     const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    const candidate = fenced?.[1] ?? text;
+    return fenced?.[1] ?? text;
+}
+
+export function parseResult(input, mode, final = false) {
+    const candidate = jsonCandidate(input);
     let result;
     try {
         result = JSON.parse(candidate);
