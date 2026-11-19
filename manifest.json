@@ -1,0 +1,12 @@
+{
+  "display_name": "ST-Input 输入助手",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "zyx486013",
+  "version": "1.0.0",
+  "minimum_client_version": "1.19.0",
+  "homePage": "https://github.com/zyx486013/ST-Input"
+}
