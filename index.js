@@ -1,7 +1,7 @@
 import { completeWithSillyTavern } from './connections.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
-import { MAX_EXAMPLE, MAX_POLISHED_REPLY, MAX_POLISH_NOTES, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
+import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISHED_REPLY, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
 
 const KEY = 'st-input';
 const SERVICE = '/api/plugins/st-input';
@@ -59,7 +59,10 @@ function mount() {
     const textarea = document.getElementById('send_textarea');
     const anchor = document.getElementById('rightSendForm');
     if (!form || !textarea || !anchor || document.getElementById('st-input-launch')) return;
-    const config = { ...DEFAULTS, ...settings() };
+    const stored = settings();
+    if (migratePolishExample(stored)) context().saveSettingsDebounced();
+    const config = { ...DEFAULTS, ...stored };
+    config.polishExamples ??= [];
 
     const panel = element('section');
     panel.id = 'st-input-panel';
@@ -78,8 +81,19 @@ function mount() {
             <label class="st-input-reference">参考旧消息 <select class="text_pole" data-st="reference"></select></label>
         </div>
         <div id="st-input-polish" class="st-input-config" data-st="polish" hidden>
+            <div class="st-input-options">
+                <label class="st-input-reference">已保存示范 <select class="text_pole" data-st="polish-examples"></select></label>
+                <label class="st-input-reference">示范名称 <input type="text" class="text_pole" maxlength="${MAX_EXAMPLE_NAME}" data-st="polish-example-name"></label>
+            </div>
             <label>文风示范 <textarea class="text_pole st-input-draft" rows="3" maxlength="${MAX_EXAMPLE}" data-st="polish-example" placeholder="粘贴一段你认可的对白或叙述"></textarea></label>
+            <div class="st-input-actions">
+                <button class="menu_button" type="button" data-st="polish-save-example">保存示范</button>
+                <button class="menu_button" type="button" data-st="polish-delete-example" hidden>删除示范</button>
+            </div>
             <label>本次精修要求 <textarea class="text_pole st-input-draft" rows="2" maxlength="${MAX_POLISH_NOTES}" data-st="polish-notes" placeholder="可留空，例如缩短对白，用动作表现犹豫"></textarea></label>
+            <label data-st="polish-budget-field" hidden>精修输出上限（tokens）
+                <input type="number" class="text_pole" min="1" max="65536" step="1" placeholder="自动" data-st="polish-budget">
+            </label>
             <div class="st-input-actions">
                 <button class="menu_button" type="button" data-st="polish-generate">按示范精修</button>
                 <button class="menu_button" type="button" data-st="polish-baseline">无示范精修</button>
@@ -226,6 +240,7 @@ function mount() {
 
     function renderConnection() {
         ui['profile-field'].hidden = config.connection !== 'profile';
+        ui['polish-budget-field'].hidden = config.connection !== 'profile';
         ui.custom.hidden = config.connection !== 'custom';
         const st = context();
         const mainModel = st.mainApi === 'openai' ? st.getChatCompletionModel?.() : '';
@@ -321,9 +336,59 @@ function mount() {
         ui['polish-example'].focus({ preventScroll: true });
     }
 
+    function refreshPolishExamplePreview() {
+        if (lastPrompt?.mode === POLISH_MODE) lastPrompt = undefined;
+        updateBusy();
+        if (ui['preview-mode'].value === POLISH_MODE) refreshPreview();
+    }
+
+    function renderPolishExampleOptions() {
+        const options = config.polishExamples.map(({ name }) => new Option(name, name));
+        ui['polish-examples'].replaceChildren(new Option('新建示范', ''), ...options);
+        ui['polish-examples'].value = config.polishExampleSelection ?? '';
+        ui['polish-delete-example'].hidden = !config.polishExampleSelection;
+    }
+
+    function loadPolishExample(name) {
+        const selected = config.polishExamples.find(example => example.name === name);
+        config.polishExampleSelection = selected?.name ?? '';
+        ui['polish-example-name'].value = selected?.name ?? '';
+        ui['polish-example'].value = selected?.text ?? '';
+        renderPolishExampleOptions();
+        refreshPolishExamplePreview();
+    }
+
+    function savePolishExample() {
+        const name = ui['polish-example-name'].value.trim();
+        const text = ui['polish-example'].value;
+        if (!name || !text.trim()) {
+            setStatus('请填写示范名称和正文。');
+            return;
+        }
+        const active = config.polishExampleSelection;
+        if (config.polishExamples.some(example => example.name === name && example.name !== active)) {
+            setStatus('已有同名示范，请换个名称。');
+            return;
+        }
+        const examples = [...config.polishExamples];
+        const index = examples.findIndex(example => example.name === active);
+        examples[index === -1 ? examples.length : index] = { name, text };
+        config.polishExamples = examples;
+        config.polishExampleSelection = name;
+        ui['polish-example-name'].value = name;
+        renderPolishExampleOptions();
+        saveSettings();
+        setStatus('已保存示范。');
+    }
+
     function startPolish(withExample) {
         const source = getSource(POLISH_MODE);
         if (!withExample) source.polishExample = '';
+        if (config.connection === 'profile') {
+            const field = ui['polish-budget'];
+            if (!field.reportValidity()) return;
+            source.requestedPolishTokens = field.value ? field.valueAsNumber : undefined;
+        }
         ui['preview-mode'].value = POLISH_MODE;
         void run(source);
     }
@@ -353,11 +418,15 @@ function mount() {
             updateBusy();
             setStatus('正在处理…');
             const maxTokens = polish ? Math.min(8192, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
-            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, maxTokens, { withDetails: polish });
+            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, maxTokens, {
+                withDetails: polish,
+                requestedPolishTokens: source.requestedPolishTokens,
+                yaml: SillyTavern.libs?.yaml,
+            });
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
             if (polish) {
                 if (!samePolishTarget(context(), snapshot)) throw new Error('模型回复或版本已变化，请重新精修。');
-                showPolishedVersion(snapshot, Boolean(source.polishExample), source.polishNotes, parsePolishedReply(result.text, result.finishReason));
+                showPolishedVersion(snapshot, Boolean(source.polishExample), source.polishNotes, parsePolishedReply(result.text, result.finishReason, result.outputTokens));
                 return;
             }
             if (target) {
@@ -668,17 +737,35 @@ function mount() {
     }
 
     ui.close.addEventListener('click', () => setOpen(false));
-    ui['polish-example'].value = typeof config.polishExample === 'string' ? config.polishExample.slice(0, MAX_EXAMPLE) : '';
-    ui['polish-example'].addEventListener('change', () => {
-        config.polishExample = ui['polish-example'].value;
+    loadPolishExample(config.polishExampleSelection);
+    ui['polish-examples'].addEventListener('change', () => {
+        const name = ui['polish-examples'].value;
+        const active = config.polishExamples.find(example => example.name === config.polishExampleSelection);
+        const dirty = ui['polish-example-name'].value !== (active?.name ?? '') || ui['polish-example'].value !== (active?.text ?? '');
+        if (dirty && !globalThis.confirm('当前示范有未保存的修改，仍要切换吗？')) {
+            ui['polish-examples'].value = config.polishExampleSelection;
+            return;
+        }
+        loadPolishExample(name);
+        saveSettings();
+    });
+    ui['polish-save-example'].addEventListener('click', savePolishExample);
+    ui['polish-delete-example'].addEventListener('click', () => {
+        config.polishExamples = config.polishExamples.filter(example => example.name !== config.polishExampleSelection);
+        config.polishExampleSelection = '';
+        renderPolishExampleOptions();
+        saveSettings();
+        setStatus('已删除保存的示范，正文保留在编辑框中。');
+    });
+    ui['polish-budget'].value = config.polishMaxTokens ?? '';
+    ui['polish-budget'].addEventListener('change', () => {
+        const field = ui['polish-budget'];
+        if (!field.validity.valid) return;
+        config.polishMaxTokens = field.value ? field.valueAsNumber : null;
         saveSettings();
     });
     for (const input of [ui['polish-example'], ui['polish-notes']]) {
-        input.addEventListener('input', () => {
-            if (lastPrompt?.mode === POLISH_MODE) lastPrompt = undefined;
-            updateBusy();
-            if (ui['preview-mode'].value === POLISH_MODE) refreshPreview();
-        });
+        input.addEventListener('input', refreshPolishExamplePreview);
     }
     ui['polish-generate'].addEventListener('click', () => startPolish(true));
     ui['polish-baseline'].addEventListener('click', () => startPolish(false));

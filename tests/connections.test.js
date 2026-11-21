@@ -100,8 +100,59 @@ test('keeps the finish reason for polishing through a saved connection', async (
         return data.choices[0].message.content;
     };
     const result = await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, { withDetails: true });
-    assert.deepEqual(result, { text: '只收到一部分', finishReason: 'length' });
+    assert.deepEqual(result, { text: '只收到一部分', finishReason: 'length', outputTokens: 4096 });
     assert.equal(sent[0][3].extractData, false);
+});
+
+test('honors the saved and custom output budgets, and applies a manual override only for polishing', async () => {
+    const customBody = { max_completion_tokens: 7000, max_tokens: 300, reasoning_effort: 'medium' };
+    const preset = {
+        openai_max_tokens: 6144,
+        custom_url: 'https://assistant.example.com/v1',
+        custom_include_body: JSON.stringify(customBody),
+        custom_exclude_body: '- max_tokens',
+    };
+    const { st, sent } = setup({ preset });
+    st.extractMessageFromData = data => data.content;
+    const yaml = { parse: JSON.parse, stringify: JSON.stringify };
+    const auto = await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, { withDetails: true, yaml });
+    const manual = await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, {
+        withDetails: true, requestedPolishTokens: 8192, yaml,
+    });
+    await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 1600);
+    assert.equal(auto.outputTokens, 7000);
+    assert.equal(manual.outputTokens, 8192);
+    for (const [index, limit] of [[0, 7000], [1, 8192]]) {
+        assert.equal(sent[index][2], limit);
+        assert.deepEqual(JSON.parse(sent[index][4].custom_include_body), { ...customBody, max_tokens: limit, max_completion_tokens: limit });
+        assert.equal(sent[index][4].custom_exclude_body, '- max_tokens');
+    }
+    assert.equal(sent[2][2], 1600);
+    assert.equal(sent[2][4].custom_include_body, preset.custom_include_body);
+    assert.deepEqual(JSON.parse(preset.custom_include_body), customBody);
+});
+
+test('uses a larger saved preset budget for a non-custom profile', async () => {
+    const { st, sent } = setup({ preset: { openai_max_tokens: 12288 } });
+    st.CONNECT_API_MAP.custom.source = 'openai';
+    st.extractMessageFromData = data => data.content;
+    const result = await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, { withDetails: true });
+    assert.equal(sent[0][2], 12288);
+    assert.equal(result.outputTokens, 12288);
+    assert.equal(sent[0][4], undefined);
+});
+
+test('updates the effective token limit in custom include lists in SillyTavern order', async () => {
+    const { st, sent } = setup({ preset: {
+        custom_url: 'https://assistant.example.com/v1',
+        custom_include_body: JSON.stringify([{ max_completion_tokens: 9000, reasoning_effort: 'medium' }, { max_completion_tokens: 500 }]),
+    } });
+    st.extractMessageFromData = data => data.content;
+    const result = await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, {
+        withDetails: true, yaml: { parse: JSON.parse, stringify: JSON.stringify },
+    });
+    assert.equal(result.outputTokens, 4096);
+    assert.deepEqual(JSON.parse(sent[0][4].custom_include_body), { reasoning_effort: 'medium', max_completion_tokens: 4096 });
 });
 
 test('gives polishing extra output space on the current chat API while keeping the usual rewrite request', async () => {
