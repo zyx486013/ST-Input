@@ -27,10 +27,20 @@ test('example and baseline use the same full target and only context preceding i
     assert.throws(() => prepareReplyPolish({ ...source, history: [{ index: 0, role: '模型', text: '原'.repeat(8001) }], polishExample }), /原回复超过/);
 });
 
-test('rejects incomplete or empty rewrites and preserves literal formatting', () => {
+test('accepts plain prose and legacy envelopes without changing Markdown or whitespace', () => {
     const value = '\n  一行\n\n<text>🚪</text>  ';
+    assert.equal(parsePolishedReply(value), value);
+    assert.equal(parsePolishedReply('**「进来。」**\n\n她把门拉开。'), '**「进来。」**\n\n她把门拉开。');
     assert.equal(parsePolishedReply(`\`\`\`json\n${JSON.stringify({ polished: value })}\n\`\`\``), value);
-    assert.throws(() => parsePolishedReply('{"polished":"未写完'), /未返回完整/);
+    assert.equal(parsePolishedReply('```js\nconsole.log("原样保留");\n```'), '```js\nconsole.log("原样保留");\n```');
+});
+
+test('reports a real token cutoff separately from malformed legacy output and empty prose', () => {
+    assert.throws(() => parsePolishedReply('只收到前半段', 'length'), /输出长度上限/);
+    assert.throws(() => parsePolishedReply('', 'MAX_TOKENS'), /输出长度上限/);
+    assert.throws(() => parsePolishedReply('{"polished":"未写完'), /格式不完整/);
+    assert.throws(() => parsePolishedReply('```JSON\n{"polished":"未写完'), /格式不完整/);
+    assert.throws(() => parsePolishedReply(''), /可用/);
     assert.throws(() => parsePolishedReply('{"polished":" "}'), /可用/);
     assert.throws(() => parsePolishedReply(JSON.stringify({ polished: '字'.repeat(12001) })), /太长/);
 });

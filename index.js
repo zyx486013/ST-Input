@@ -45,11 +45,13 @@ function getProfiles() {
     }
 }
 
-async function complete(messages, connection, profileId, signal, maxTokens = 1600) {
+async function complete(messages, connection, profileId, signal, maxTokens = 1600, options) {
     if (connection === 'custom') {
-        return (await service('generate', { method: 'POST', data: { messages }, signal })).text;
+        const data = options?.withDetails ? { messages, withDetails: true } : { messages };
+        const result = await service('generate', { method: 'POST', data, signal });
+        return options?.withDetails ? result : result.text;
     }
-    return completeWithSillyTavern(context(), messages, connection, profileId, signal, maxTokens);
+    return completeWithSillyTavern(context(), messages, connection, profileId, signal, maxTokens, options);
 }
 
 function mount() {
@@ -351,11 +353,11 @@ function mount() {
             updateBusy();
             setStatus('正在处理…');
             const maxTokens = polish ? Math.min(8192, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
-            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, maxTokens);
+            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, maxTokens, { withDetails: polish });
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
             if (polish) {
                 if (!samePolishTarget(context(), snapshot)) throw new Error('模型回复或版本已变化，请重新精修。');
-                showPolishedVersion(snapshot, Boolean(source.polishExample), source.polishNotes, parsePolishedReply(result));
+                showPolishedVersion(snapshot, Boolean(source.polishExample), source.polishNotes, parsePolishedReply(result.text, result.finishReason));
                 return;
             }
             if (target) {

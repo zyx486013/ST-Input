@@ -13,7 +13,7 @@ function setup({ preset, active, failure, url = 'https://assistant.example.com/v
     };
     const sent = [];
     const st = {
-        CONNECT_API_MAP: { custom: { source: 'custom' } },
+        CONNECT_API_MAP: { custom: { selected: 'openai', source: 'custom' } },
         chatCompletionSettings: active,
         getPresetManager: () => ({ getCompletionPresetByName: () => preset }),
         substituteParams: value => value.replace('{{user}}', '我'),
@@ -87,4 +87,41 @@ test('identifies incomplete saved connections before sending a request', async (
     const { st, sent } = setup({ url: '' });
     await assert.rejects(completeWithSillyTavern(st, prompt, 'profile', 'assistant'), /未保存 API 地址或模型/);
     assert.equal(sent.length, 0);
+});
+
+test('keeps the finish reason for polishing through a saved connection', async () => {
+    const { st, sent } = setup();
+    st.ConnectionManagerRequestService.sendRequest = async (...args) => {
+        sent.push(args);
+        return { choices: [{ message: { content: '只收到一部分' }, finish_reason: 'length' }] };
+    };
+    st.extractMessageFromData = (data, api) => {
+        assert.equal(api, 'openai');
+        return data.choices[0].message.content;
+    };
+    const result = await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, { withDetails: true });
+    assert.deepEqual(result, { text: '只收到一部分', finishReason: 'length' });
+    assert.equal(sent[0][3].extractData, false);
+});
+
+test('gives polishing extra output space on the current chat API while keeping the usual rewrite request', async () => {
+    const requests = [];
+    const st = {
+        mainApi: 'openai',
+        chatCompletionSettings: { openai_max_tokens: 300 },
+        generateRaw: async request => { requests.push(request); return '普通草稿'; },
+        generateRawData: async request => { requests.push(request); return { text: '精修正文', stop_reason: 'end_turn' }; },
+        extractMessageFromData: data => data.text,
+    };
+    assert.equal(await completeWithSillyTavern(st, prompt, 'current'), '普通草稿');
+    assert.deepEqual(await completeWithSillyTavern(st, prompt, 'current', '', undefined, 2400, { withDetails: true }), {
+        text: '精修正文', finishReason: 'end_turn',
+    });
+    st.chatCompletionSettings.openai_max_tokens = 4096;
+    await completeWithSillyTavern(st, prompt, 'current', '', undefined, 2400, { withDetails: true });
+    assert.deepEqual(requests, [
+        { prompt, trimNames: false },
+        { prompt, api: 'openai', responseLength: 2400 },
+        { prompt, api: 'openai' },
+    ]);
 });

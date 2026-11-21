@@ -54,7 +54,15 @@ function explainFailure(error) {
     return explanation ?? '请查看 SillyTavern 启动窗口中这次请求的错误详情。';
 }
 
-export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens) {
+function completionDetails(st, data, api) {
+    const choice = data?.choices?.[0];
+    return {
+        text: st.extractMessageFromData(data, api),
+        finishReason: choice?.finish_reason ?? data?.stop_reason ?? data?.stop_type,
+    };
+}
+
+export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens, { withDetails = false } = {}) {
     const useProfile = connection === 'profile';
     const service = st.ConnectionManagerRequestService;
     if (useProfile && (!service || !profileId)) {
@@ -62,6 +70,7 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
     }
 
     let overrides;
+    let selectedApi;
     if (useProfile) {
         let profile;
         try {
@@ -69,16 +78,23 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
         } catch (error) {
             throw new Error(explainFailure(error), { cause: error });
         }
-        const source = st.CONNECT_API_MAP?.[profile.api]?.source;
-        if (source === 'custom') overrides = customRequestParameters(st, profile);
+        const api = st.CONNECT_API_MAP?.[profile.api];
+        selectedApi = api?.selected;
+        if (api?.source === 'custom') overrides = customRequestParameters(st, profile);
     }
 
     try {
         if (useProfile) {
             const result = await service.sendRequest(profileId, messages, maxTokens, {
-                stream: false, extractData: true, includePreset: true, signal,
+                stream: false, extractData: !withDetails, includePreset: true, signal,
             }, overrides);
-            return result.content;
+            return withDetails ? completionDetails(st, result, selectedApi) : result.content;
+        }
+        if (withDetails) {
+            const request = { prompt: messages, api: st.mainApi };
+            const limit = Number(st.chatCompletionSettings?.openai_max_tokens);
+            if (st.mainApi === 'openai' && maxTokens > limit) request.responseLength = maxTokens;
+            return completionDetails(st, await st.generateRawData(request), st.mainApi);
         }
         return await st.generateRaw({ prompt: messages, trimNames: false });
     } catch (error) {
