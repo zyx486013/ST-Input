@@ -1,6 +1,7 @@
 import { completeWithSillyTavern } from './connections.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
+import { MAX_EXAMPLE, MAX_POLISHED_REPLY, MAX_POLISH_NOTES, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
 
 const KEY = 'st-input';
 const SERVICE = '/api/plugins/st-input';
@@ -74,6 +75,15 @@ function mount() {
             <label>最近消息数 <input type="number" class="text_pole" min="1" max="40" step="1" data-st="history-count"></label>
             <label class="st-input-reference">参考旧消息 <select class="text_pole" data-st="reference"></select></label>
         </div>
+        <div id="st-input-polish" class="st-input-config" data-st="polish" hidden>
+            <label>文风示范 <textarea class="text_pole st-input-draft" rows="3" maxlength="${MAX_EXAMPLE}" data-st="polish-example" placeholder="粘贴一段你认可的对白或叙述"></textarea></label>
+            <label>本次精修要求 <textarea class="text_pole st-input-draft" rows="2" maxlength="${MAX_POLISH_NOTES}" data-st="polish-notes" placeholder="可留空，例如缩短对白，用动作表现犹豫"></textarea></label>
+            <div class="st-input-actions">
+                <button class="menu_button" type="button" data-st="polish-generate">按示范精修</button>
+                <button class="menu_button" type="button" data-st="polish-baseline">无示范精修</button>
+                <button class="menu_button" type="button" data-st="polish-undo" hidden>恢复原回复</button>
+            </div>
+        </div>
         <details data-st="preview">
             <summary>提示词预览</summary>
             <label>预览操作 <select class="text_pole" data-st="preview-mode"></select></label>
@@ -121,6 +131,9 @@ function mount() {
     let checking = false;
     let revision = 0;
     let undoDraft;
+    let undoReply;
+    let comparison;
+    let writingReply = false;
     let customConfig;
     let lastPrompt;
 
@@ -142,13 +155,17 @@ function mount() {
     });
     undo.hidden = true;
 
-    for (const [mode, label] of Object.entries({ ...MODES, [LOGIC_MODE]: LOGIC_LABEL })) {
-        const action = button(label, () => start(mode));
+    for (const [mode, label] of Object.entries({ ...MODES, [LOGIC_MODE]: LOGIC_LABEL, [POLISH_MODE]: POLISH_LABEL })) {
+        const action = button(label, () => mode === POLISH_MODE ? openPolish() : start(mode));
         action.dataset.mode = mode;
+        if (mode === POLISH_MODE) {
+            action.setAttribute('aria-expanded', 'false');
+            action.setAttribute('aria-controls', 'st-input-polish');
+        }
         ui.actions.append(action);
         ui['preview-mode'].append(new Option(label, mode));
     }
-    const cancel = button('取消', () => clearRequest('已取消。'));
+    const cancel = button('取消', () => clearRequest('已取消。', pending?.mode === POLISH_MODE));
     cancel.hidden = true;
     ui.actions.append(cancel, undo);
 
@@ -219,30 +236,45 @@ function mount() {
     }
 
     function updateBusy() {
-        for (const action of ui.actions.querySelectorAll('[data-mode]')) action.disabled = Boolean(pending);
+        const busy = Boolean(pending) || writingReply;
+        for (const action of ui.actions.querySelectorAll('[data-mode]')) action.disabled = busy;
+        ui['polish-generate'].disabled = busy || !ui['polish-example'].value.trim();
+        ui['polish-baseline'].disabled = busy;
+        ui['polish-undo'].disabled = busy;
+        const apply = ui.result.querySelector('[data-polish-apply]');
+        if (apply) apply.disabled = busy || apply.dataset.polishApply === 'false';
         cancel.hidden = !pending;
         for (const key of ['load-custom', 'load-models', 'save-custom', 'test']) ui[key].disabled = checking;
         for (const key of ['url', 'model', 'key', 'connection', 'profiles']) ui[key].disabled = checking;
         ui['clear-key'].disabled = checking || !customConfig?.hasKey;
     }
 
-    function clearRequest(message = '') {
+    function clearRequest(message = '', keepComparison = false) {
         revision += 1;
         pending?.controller.abort();
-        ui.result.replaceChildren();
+        if (!keepComparison) {
+            comparison = undefined;
+            ui.result.replaceChildren();
+        }
         lastPrompt = undefined;
         refreshPreview();
         setStatus(message);
     }
 
     function getSource(mode) {
-        const history = config.history || mode === LOGIC_MODE ? getChatMessages(context().chat) : [];
+        const history = config.history || mode === LOGIC_MODE || mode === POLISH_MODE ? getChatMessages(context().chat) : [];
         const pinned = config.history && ui.reference.value ? Number(ui.reference.value) : undefined;
-        return { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
+        const source = { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
+        if (mode === POLISH_MODE) {
+            source.polishExample = ui['polish-example'].value.trim();
+            source.polishNotes = ui['polish-notes'].value.trim();
+        }
+        return source;
     }
 
     function buildRequest(source, answers, final) {
         if (source.mode === LOGIC_MODE) return prepareLogicCheck(source);
+        if (source.mode === POLISH_MODE) return prepareReplyPolish(source);
         return { prompt: buildPrompt({ ...source, answers, final }) };
     }
 
@@ -263,27 +295,69 @@ function mount() {
     }
 
     function start(mode) {
+        showPolishForm(false);
+        comparison = undefined;
         ui['preview-mode'].value = mode;
         void run(getSource(mode));
     }
 
+    function showPolishForm(open) {
+        ui.polish.hidden = !open;
+        panel.classList.toggle('st-input-polish-open', open);
+        ui.actions.querySelector('[data-mode="polish"]').setAttribute('aria-expanded', String(open));
+    }
+
+    function openPolish() {
+        if (!ui.polish.hidden) {
+            showPolishForm(false);
+            clearRequest();
+            return;
+        }
+        showPolishForm(true);
+        ui['preview-mode'].value = POLISH_MODE;
+        clearRequest();
+        ui['polish-example'].focus({ preventScroll: true });
+    }
+
+    function startPolish(withExample) {
+        const source = getSource(POLISH_MODE);
+        if (!withExample) source.polishExample = '';
+        ui['preview-mode'].value = POLISH_MODE;
+        void run(source);
+    }
+
+    function chatIsGenerating(st) {
+        return Boolean(st.streamingProcessor) || document.body.dataset.generating === 'true';
+    }
+
     async function run(source, answers = [], final = false) {
-        if (pending) return;
+        if (pending || writingReply) return;
         const currentRevision = ++revision;
-        const chatId = context().getCurrentChatId();
-        ui.result.replaceChildren();
+        const st = context();
+        const chatId = st.getCurrentChatId();
+        const polish = source.mode === POLISH_MODE;
+        if (!polish) ui.result.replaceChildren();
         lastPrompt = undefined;
         setStatus('');
         try {
             const request = buildRequest(source, answers, final);
             const { prompt, target } = request;
+            const message = polish ? st.chat[target.index] : null;
+            const snapshot = polish ? { ...target, message, chatId, chatLength: st.chat.length, swipeId: message.swipe_id } : null;
+            if (polish && chatIsGenerating(st)) throw new Error('请等当前回复生成完毕，再开始精修。');
             lastPrompt = { mode: source.mode, draft: source.draft, messages: prompt };
             showPrompt(prompt);
-            pending = { controller: new AbortController() };
+            pending = { controller: new AbortController(), mode: source.mode };
             updateBusy();
             setStatus('正在处理…');
-            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, target ? 2400 : undefined);
+            const maxTokens = polish ? Math.min(8192, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
+            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, maxTokens);
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
+            if (polish) {
+                if (!samePolishTarget(context(), snapshot)) throw new Error('模型回复或版本已变化，请重新精修。');
+                showPolishedVersion(snapshot, Boolean(source.polishExample), source.polishNotes, parsePolishedReply(result));
+                return;
+            }
             if (target) {
                 setStatus('');
                 if (logicTargetChanged(target)) return;
@@ -296,6 +370,148 @@ function mount() {
             if (currentRevision === revision) setStatus(error.message);
         } finally {
             pending = undefined;
+            updateBusy();
+        }
+    }
+
+    function showPolishedVersion(target, withExample, notes, text) {
+        if (comparison?.target.message !== target.message || comparison.target.text !== target.text
+            || comparison.target.swipeId !== target.swipeId || comparison.notes !== notes) {
+            comparison = { target, notes, versions: new Map() };
+        }
+        comparison.versions.set(withExample, text);
+        renderPolishComparison(comparison, withExample);
+        setStatus('精修稿已生成。');
+    }
+
+    function renderPolishComparison(result, withExample) {
+        const { target, versions } = result;
+        const stack = element('div', null, 'st-input-config');
+        const controls = element('div', null, 'st-input-actions');
+        const version = element('select', null, 'text_pole');
+        version.setAttribute('aria-label', '对比稿件');
+        for (const [key, name] of [[true, '有示范稿'], [false, '无示范稿']]) {
+            if (versions.has(key)) version.append(new Option(name, String(key)));
+        }
+        version.value = String(withExample);
+        version.addEventListener('change', () => renderPolishComparison(result, version.value === 'true'));
+        const baseline = element('select', null, 'text_pole');
+        baseline.setAttribute('aria-label', '对照文本');
+        baseline.append(new Option('对照原回复', 'original'));
+        if (versions.has(!withExample)) {
+            baseline.append(new Option(withExample ? '对照无示范稿' : '对照有示范稿', 'other'));
+        } else baseline.hidden = true;
+
+        const editor = element('textarea', null, 'text_pole st-input-draft');
+        editor.setAttribute('aria-label', '编辑精修稿');
+        editor.rows = 6;
+        editor.maxLength = MAX_POLISHED_REPLY;
+        editor.value = versions.get(withExample);
+        editor.hidden = true;
+        const edit = button('编辑精修稿', () => {
+            editor.hidden = !editor.hidden;
+            edit.textContent = editor.hidden ? '编辑精修稿' : '完成编辑';
+            edit.setAttribute('aria-expanded', String(!editor.hidden));
+            if (!editor.hidden) editor.focus();
+        });
+        edit.setAttribute('aria-expanded', 'false');
+        controls.append(version, baseline, edit);
+
+        const columns = element('div', null, 'st-input-compare');
+        const original = element('pre', null, 'st-input-compare-text');
+        original.tabIndex = 0;
+        const revised = element('pre', null, 'st-input-compare-text');
+        revised.tabIndex = 0;
+        revised.setAttribute('aria-label', '精修稿');
+        const originalColumn = element('section');
+        const revisedColumn = element('section');
+        const originalTitle = element('strong');
+        originalColumn.append(originalTitle, original);
+        revisedColumn.append(element('strong', '精修稿 · 下划线为新增'), revised);
+        columns.append(originalColumn, revisedColumn);
+
+        const actions = element('div', null, 'st-input-actions');
+        const apply = button('替换聊天回复', () => void changeReply(target, versions.get(withExample), target.text));
+        const copy = button('复制精修稿', async () => {
+            try {
+                await navigator.clipboard.writeText(versions.get(withExample));
+                setStatus('已复制精修稿。');
+            } catch {
+                setStatus('无法访问剪贴板。可打开「编辑精修稿」手动复制。');
+            }
+        });
+        actions.append(apply, copy);
+        const summary = element('small', null, 'st-input-polish-summary');
+        const differ = typeof globalThis.diff_match_patch === 'function' ? new globalThis.diff_match_patch() : null;
+        if (differ) differ.Diff_Timeout = 0.06;
+
+        function compare() {
+            const text = versions.get(withExample);
+            const otherVersion = baseline.value === 'other';
+            const before = otherVersion ? versions.get(!withExample) : target.text;
+            const beforeName = otherVersion ? (withExample ? '无示范稿' : '有示范稿') : '原回复';
+            originalTitle.textContent = `${beforeName} · 删除线为删改`;
+            original.setAttribute('aria-label', beforeName);
+            original.replaceChildren();
+            revised.replaceChildren();
+            if (!differ || text === before) {
+                original.textContent = before;
+                revised.textContent = text;
+            } else {
+                const differences = differ.diff_main(before, text);
+                differ.diff_cleanupSemantic(differences);
+                if (differences.some(([, part]) => /[\uD800-\uDFFF]/u.test(part))) {
+                    original.append(element('del', before));
+                    revised.append(element('ins', text));
+                } else {
+                    for (const [operation, part] of differences) {
+                        if (operation === 0) {
+                            original.append(part);
+                            revised.append(part);
+                        } else if (operation < 0) original.append(element('del', part));
+                        else revised.append(element('ins', part));
+                    }
+                }
+            }
+            const canApply = text !== target.text && Boolean(text.trim());
+            apply.dataset.polishApply = String(canApply);
+            apply.disabled = !canApply || Boolean(pending) || writingReply;
+            copy.disabled = !text.trim();
+            summary.textContent = text === before ? '两份文字相同。' : `${beforeName} ${[...before].length} 字 · 精修稿 ${[...text].length} 字`;
+        }
+
+        let frame;
+        editor.addEventListener('input', () => {
+            versions.set(withExample, editor.value);
+            if (frame) cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(compare);
+        });
+        baseline.addEventListener('change', compare);
+        compare();
+        stack.append(controls, editor, columns, summary, actions);
+        ui.result.replaceChildren(stack);
+    }
+
+    async function changeReply(target, text, expectedText, restoring = false) {
+        if (pending || writingReply) return;
+        const st = context();
+        if (chatIsGenerating(st) || document.querySelector('#chat .edit_textarea')) {
+            setStatus('请先结束聊天中的生成或编辑。');
+            return;
+        }
+        const currentRevision = revision;
+        writingReply = true;
+        updateBusy();
+        try {
+            await writePolishedReply(st, target, text, expectedText, context);
+            if (!samePolishTarget(context(), target, text)) return;
+            undoReply = restoring ? undefined : { target, applied: text };
+            ui['polish-undo'].hidden = restoring;
+            clearRequest(restoring ? '已恢复原回复。' : '已替换聊天回复，可点击「恢复原回复」撤销。');
+        } catch (error) {
+            if (currentRevision === revision) setStatus(error.message);
+        } finally {
+            writingReply = false;
             updateBusy();
         }
     }
@@ -450,6 +666,23 @@ function mount() {
     }
 
     ui.close.addEventListener('click', () => setOpen(false));
+    ui['polish-example'].value = typeof config.polishExample === 'string' ? config.polishExample.slice(0, MAX_EXAMPLE) : '';
+    ui['polish-example'].addEventListener('change', () => {
+        config.polishExample = ui['polish-example'].value;
+        saveSettings();
+    });
+    for (const input of [ui['polish-example'], ui['polish-notes']]) {
+        input.addEventListener('input', () => {
+            if (lastPrompt?.mode === POLISH_MODE) lastPrompt = undefined;
+            updateBusy();
+            if (ui['preview-mode'].value === POLISH_MODE) refreshPreview();
+        });
+    }
+    ui['polish-generate'].addEventListener('click', () => startPolish(true));
+    ui['polish-baseline'].addEventListener('click', () => startPolish(false));
+    ui['polish-undo'].addEventListener('click', () => {
+        if (undoReply) void changeReply(undoReply.target, undoReply.target.text, undoReply.applied, true);
+    });
     panel.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
             event.stopPropagation();
@@ -526,7 +759,10 @@ function mount() {
     const st = context();
     st.eventSource.on(st.eventTypes.CHAT_CHANGED, () => {
         undoDraft = undefined;
+        undoReply = undefined;
         undo.hidden = true;
+        ui['polish-undo'].hidden = true;
+        ui['polish-notes'].value = '';
         ui.reference.value = '';
         if (!panel.hidden) refreshReferences();
         clearRequest();
@@ -537,6 +773,7 @@ function mount() {
     st.eventSource.on(st.eventTypes.MESSAGE_RECEIVED, refreshChat);
     st.eventSource.on(st.eventTypes.MESSAGE_SENT, refreshChat);
     renderConnection();
+    updateBusy();
 }
 
 globalThis.SillyTavern.getContext().eventSource.on(context().eventTypes.APP_READY, mount);
