@@ -77,6 +77,10 @@
     width: 4.5em;
 }
 
+#st-input-panel [data-st="polish-budget"] {
+    width: 7em;
+}
+
 #st-input-panel .st-input-reference {
     display: flex;
     align-items: center;

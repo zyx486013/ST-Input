@@ -4,9 +4,22 @@ import { getChatMessages, jsonCandidate, serializeMessage } from './prompts.js';
 export const POLISH_MODE = 'polish';
 export const POLISH_LABEL = '精修回复';
 export const MAX_EXAMPLE = 6000;
+export const MAX_EXAMPLE_NAME = 60;
 export const MAX_POLISH_NOTES = 1200;
 export const MAX_POLISHED_REPLY = 12000;
 const MAX_SOURCE = 8000;
+
+export function migratePolishExample(settings) {
+    if (!Object.hasOwn(settings, 'polishExample')) return false;
+    const previous = settings.polishExample;
+    if (!Array.isArray(settings.polishExamples) && typeof previous === 'string' && previous.trim()) {
+        const name = '原文风示范';
+        settings.polishExamples = [{ name, text: previous.slice(0, MAX_EXAMPLE) }];
+        settings.polishExampleSelection = name;
+    }
+    delete settings.polishExample;
+    return true;
+}
 
 const SYSTEM = [
     '你是 SillyTavern 的文字编辑。精修指定模型回复，使表达更自然、具体、连贯。',
@@ -49,8 +62,9 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     return { target, prompt: [{ role: 'system', content: SYSTEM }, { role: 'user', content }] };
 }
 
-export function parsePolishedReply(input, finishReason) {
+export function parsePolishedReply(input, finishReason, outputTokens) {
     if (/^(length|max_(?:output_)?tokens|limit)$/i.test(finishReason ?? '')) {
+        if (outputTokens) throw new Error(`精修达到输出长度上限。本次请求额度为 ${outputTokens} tokens，可提高「精修输出上限」后再试。`);
         throw new Error('精修达到模型的输出长度上限。请调高连接的回复长度，或在本次要求中指定较短的篇幅。');
     }
     if (typeof input !== 'string' || !input.trim()) {

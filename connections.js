@@ -11,15 +11,12 @@ function apiRoot(value) {
     }
 }
 
-function customRequestParameters(st, profile) {
+function customRequestParameters(st, profile, preset) {
     const baseUrl = apiRoot(profile['api-url']);
     if (!baseUrl || !profile.model?.trim()) {
         throw new Error('这条 SillyTavern 连接未保存 API 地址或模型。请在 ST 里选中它，填好后点「更新」，再试一次。');
     }
 
-    const preset = profile.preset
-        ? st.getPresetManager?.('openai')?.getCompletionPresetByName(profile.preset)
-        : null;
     const active = st.chatCompletionSettings;
     const options = [preset, active].find(settings => apiRoot(settings?.custom_url) === baseUrl);
 
@@ -29,6 +26,33 @@ function customRequestParameters(st, profile) {
         const value = typeof options?.[field] === 'string' ? options[field] : '';
         return [field, value ? (st.substituteParams?.(value) ?? value) : ''];
     }));
+}
+
+function prepareProfileBudget(preset, overrides, suggested, requested, yaml) {
+    const configured = Number(preset?.openai_max_tokens ?? preset?.genamt);
+    let maxTokens = requested ?? Math.max(suggested, 4096, Number.isSafeInteger(configured) ? configured : 0);
+    if (!overrides?.custom_include_body || !yaml) return maxTokens;
+
+    let body;
+    try {
+        body = yaml.parse(overrides.custom_include_body);
+    } catch {
+        // SillyTavern handles invalid custom YAML in the saved connection.
+        return maxTokens;
+    }
+    if (Array.isArray(body)) {
+        // SillyTavern merges YAML list entries in order, with later values taking precedence.
+        body = Object.fromEntries(body.filter(item => item && typeof item === 'object' && !Array.isArray(item)).flatMap(Object.entries));
+    }
+    const tokenFields = ['max_tokens', 'max_completion_tokens'].filter(key => {
+        const value = Number(body?.[key]);
+        return Number.isSafeInteger(value) && value > 0;
+    });
+    if (!tokenFields.length) return maxTokens;
+    if (requested === undefined) maxTokens = Math.max(maxTokens, ...tokenFields.map(key => Number(body[key])));
+    for (const key of tokenFields) body[key] = maxTokens;
+    overrides.custom_include_body = yaml.stringify(body);
+    return maxTokens;
 }
 
 const KNOWN_FAILURES = [
@@ -62,7 +86,7 @@ function completionDetails(st, data, api) {
     };
 }
 
-export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens, { withDetails = false } = {}) {
+export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens, { withDetails = false, requestedPolishTokens, yaml } = {}) {
     const useProfile = connection === 'profile';
     const service = st.ConnectionManagerRequestService;
     if (useProfile && (!service || !profileId)) {
@@ -80,7 +104,11 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
         }
         const api = st.CONNECT_API_MAP?.[profile.api];
         selectedApi = api?.selected;
-        if (api?.source === 'custom') overrides = customRequestParameters(st, profile);
+        const preset = profile.preset && (withDetails || api?.source === 'custom')
+            ? st.getPresetManager?.(selectedApi ?? 'openai')?.getCompletionPresetByName(profile.preset)
+            : undefined;
+        if (api?.source === 'custom') overrides = customRequestParameters(st, profile, preset);
+        if (withDetails) maxTokens = prepareProfileBudget(preset, overrides, maxTokens, requestedPolishTokens, yaml);
     }
 
     try {
@@ -88,7 +116,7 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
             const result = await service.sendRequest(profileId, messages, maxTokens, {
                 stream: false, extractData: !withDetails, includePreset: true, signal,
             }, overrides);
-            return withDetails ? completionDetails(st, result, selectedApi) : result.content;
+            return withDetails ? { ...completionDetails(st, result, selectedApi), outputTokens: maxTokens } : result.content;
         }
         if (withDetails) {
             const request = { prompt: messages, api: st.mainApi };
