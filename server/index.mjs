@@ -104,6 +104,7 @@ export async function init(router) {
         const config = await readConfig(file);
         if (!config.baseUrl || !config.model) throw new RequestError(400, '请先保存自定义 API 地址和模型。');
         const messages = readMessages(input);
+        if (input.withDetails === true) return callUpstream(config, 'generate', { messages, disconnect, withDetails: true });
         return { text: await callUpstream(config, 'generate', { messages, disconnect }) };
     }));
 }

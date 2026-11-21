@@ -30,7 +30,10 @@ test('requests an allowed local OpenAI endpoint, handles model lists and refuses
         if (req.url === '/v1/models') {
             res.end(JSON.stringify({ data: [{ id: 'small' }, { id: 'small' }] }));
         } else if (req.url === '/v1/chat/completions') {
-            res.end(JSON.stringify({ choices: [{ message: { content: '正常' } }] }));
+            const capped = JSON.parse(calls.at(-1).body).messages[0].content === '只有推理';
+            res.end(JSON.stringify({ choices: [{
+                message: { content: capped ? '' : '正常' }, finish_reason: capped ? 'length' : 'stop',
+            }] }));
         } else {
             res.writeHead(302, { Location: '/v1/models' }).end();
         }
@@ -50,6 +53,10 @@ test('requests an allowed local OpenAI endpoint, handles model lists and refuses
     assert.equal(await callUpstream(config, 'generate', { messages }), '正常');
     assert.equal(calls[1].authorization, 'Bearer test-key');
     assert.deepEqual(JSON.parse(calls[1].body).messages, messages);
+    assert.deepEqual(await callUpstream(config, 'generate', { messages, withDetails: true }), { text: '正常', finishReason: 'stop' });
+    assert.deepEqual(await callUpstream(config, 'generate', {
+        messages: [{ role: 'user', content: '只有推理' }], withDetails: true,
+    }), { text: '', finishReason: 'length' });
     await assert.rejects(callUpstream({ ...config, baseUrl: `${origin}/redirect` }, 'models'), /HTTP 302/);
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 5);
 });
