@@ -27,6 +27,27 @@ test('example and baseline use the same full target and only context preceding i
     assert.throws(() => prepareReplyPolish({ ...source, history: [{ index: 0, role: '模型', text: '原'.repeat(8001) }], polishExample }), /原回复超过/);
 });
 
+test('uses display-transformed text for the target and context, keeping the original for restoration', () => {
+    const raw = '<hidden>' + '秘密'.repeat(4500) + '</hidden>**正文**';
+    const history = getChatMessages([
+        { mes: '<hidden>隐藏参考</hidden>参考稿', is_user: true },
+        { mes: '<hidden>隐藏上下文</hidden>上文' },
+        { mes: raw },
+        { mes: '后来消息', is_user: true },
+    ]);
+    const displayText = message => message.text.replace(/<hidden>.*?<\/hidden>/gs, '');
+    const source = { history, historyCount: 2, pinned: 0, polishExample: '范文', polishNotes: '', displayText };
+    const { target, prompt } = prepareReplyPolish(source);
+    assert.deepEqual([target.index, target.text, target.rawText], [2, '**正文**', raw]);
+    assert.match(prompt[1].content, /参考稿/);
+    assert.match(prompt[1].content, /上文/);
+    assert.doesNotMatch(prompt[1].content, /隐藏|秘密|后来消息/);
+    assert.ok(prompt[1].content.endsWith(JSON.stringify('**正文**')));
+
+    history[2].text = '<hidden>全部隐藏</hidden>';
+    assert.throws(() => prepareReplyPolish(source), /正则处理后没有可精修的正文/);
+});
+
 test('accepts plain prose and legacy envelopes without changing Markdown or whitespace', () => {
     const value = '\n  一行\n\n<text>🚪</text>  ';
     assert.equal(parsePolishedReply(value), value);
@@ -61,9 +82,10 @@ test('migrates the single saved example once and keeps existing named examples',
     assert.deepEqual(settings.polishExamples, []);
 });
 
-test('applies and restores only the selected swipe, rerenders and saves through ST', async () => {
+test('applies only the selected swipe and restores the exact raw text even after display regex', async () => {
+    const raw = '<hidden>' + '字'.repeat(12001) + '</hidden>' + original;
     const message = {
-        mes: original, swipe_id: 1, swipes: ['旧稿', original],
+        mes: raw, swipe_id: 1, swipes: ['旧稿', raw],
         extra: { display_text: '译文', reasoning: '原推理' },
         swipe_info: [{ extra: { display_text: '旧稿译文' } }, { extra: { display_text: '译文' } }],
     };
@@ -78,9 +100,9 @@ test('applies and restores only the selected swipe, rerenders and saves through 
         eventSource: { emit: async (...args) => { calls.push(args); } },
         saveChat: async () => { calls.push(['save']); },
     };
-    const target = { message, index: 1, swipeId: 1, text: original, chatId, chatLength: 2 };
+    const target = { message, index: 1, swipeId: 1, text: original, rawText: raw, chatId, chatLength: 2 };
     assert.ok(samePolishTarget(st, target));
-    await writePolishedReply(st, target, revised, original, () => st);
+    await writePolishedReply(st, target, revised, raw, () => st);
     assert.equal(message.mes, revised);
     assert.deepEqual(message.swipes, ['旧稿', revised]);
     assert.deepEqual(message.extra, { reasoning: '原推理' });
@@ -88,17 +110,17 @@ test('applies and restores only the selected swipe, rerenders and saves through 
     assert.equal(st.chatMetadata.tainted, true);
     assert.deepEqual(calls, [['render', 1, revised], ['edited', 1], ['render', 1, revised], ['updated', 1], ['save']]);
 
-    await writePolishedReply(st, target, original, revised, () => st);
-    assert.equal(message.mes, original);
-    assert.deepEqual(message.swipes, ['旧稿', original]);
+    await writePolishedReply(st, target, raw, revised, () => st);
+    assert.equal(message.mes, raw);
+    assert.deepEqual(message.swipes, ['旧稿', raw]);
 
     st.chat.push({ mes: '继续', is_user: true });
-    await assert.rejects(writePolishedReply(st, target, revised, original, () => st), /已变化/);
+    await assert.rejects(writePolishedReply(st, target, revised, raw, () => st), /已变化/);
     st.chat.pop();
     message.swipe_id = 0;
     assert.equal(samePolishTarget(st, target), false);
     message.swipe_id = 1;
     chatId = 'other-chat';
     assert.equal(samePolishTarget(st, target), false);
-    assert.equal(message.mes, original);
+    assert.equal(message.mes, raw);
 });

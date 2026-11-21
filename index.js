@@ -1,3 +1,4 @@
+import { getRegexedString, regex_placement } from '/scripts/extensions/regex/engine.js';
 import { completeWithSillyTavern } from './connections.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
@@ -8,6 +9,22 @@ const SERVICE = '/api/plugins/st-input';
 const DEFAULTS = { connection: 'current', profileId: '', history: true, historyCount: 8 };
 const context = () => SillyTavern.getContext();
 const settings = () => context().extensionSettings[KEY] ??= { ...DEFAULTS };
+
+function getPolishDisplayText(st, { index, text }) {
+    const message = st.chat[index];
+    let placement = regex_placement.AI_OUTPUT;
+    if (message.is_user) placement = regex_placement.USER_INPUT;
+    else if (message.extra?.type === 'narrator') placement = regex_placement.SLASH_COMMAND;
+
+    // ST counts all non-system messages after this one, even if the prompt omits them.
+    const depth = st.chat.slice(index + 1).filter(item => !item.is_system).length;
+    const powerUser = st.powerUserSettings;
+    const bias = !powerUser?.show_user_prompt_bias && !message.is_user && message.name && powerUser?.user_prompt_bias
+        ? st.substituteParams(powerUser.user_prompt_bias)
+        : '';
+    const visibleText = bias && text.startsWith(bias) ? text.slice(bias.length) : text;
+    return getRegexedString(visibleText, placement, { characterOverride: message.name, isMarkdown: true, depth });
+}
 
 function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -279,10 +296,12 @@ function mount() {
     }
 
     function getSource(mode) {
-        const history = config.history || mode === LOGIC_MODE || mode === POLISH_MODE ? getChatMessages(context().chat) : [];
+        const st = context();
+        const history = config.history || mode === LOGIC_MODE || mode === POLISH_MODE ? getChatMessages(st.chat) : [];
         const pinned = config.history && ui.reference.value ? Number(ui.reference.value) : undefined;
         const source = { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
         if (mode === POLISH_MODE) {
+            source.displayText = message => getPolishDisplayText(st, message);
             source.polishExample = ui['polish-example'].value.trim();
             source.polishNotes = ui['polish-notes'].value.trim();
         }
@@ -425,7 +444,7 @@ function mount() {
             });
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
             if (polish) {
-                if (!samePolishTarget(context(), snapshot)) throw new Error('模型回复或版本已变化，请重新精修。');
+                checkPolishSource(snapshot);
                 showPolishedVersion(snapshot, Boolean(source.polishExample), source.polishNotes, parsePolishedReply(result.text, result.finishReason, result.outputTokens));
                 return;
             }
@@ -445,9 +464,17 @@ function mount() {
         }
     }
 
+    function checkPolishSource(target) {
+        const st = context();
+        if (!samePolishTarget(st, target)) throw new Error('模型回复或版本已变化，请重新精修。');
+        if (getPolishDisplayText(st, { index: target.index, text: target.rawText }) !== target.text) {
+            throw new Error('正则处理后的回复已变化，请重新精修。');
+        }
+    }
+
     function showPolishedVersion(target, withExample, notes, text) {
         if (comparison?.target.message !== target.message || comparison.target.text !== target.text
-            || comparison.target.swipeId !== target.swipeId || comparison.notes !== notes) {
+            || comparison.target.rawText !== target.rawText || comparison.target.swipeId !== target.swipeId || comparison.notes !== notes) {
             comparison = { target, notes, versions: new Map() };
         }
         comparison.versions.set(withExample, text);
@@ -502,7 +529,7 @@ function mount() {
         columns.append(originalColumn, revisedColumn);
 
         const actions = element('div', null, 'st-input-actions');
-        const apply = button('替换聊天回复', () => void changeReply(target, versions.get(withExample), target.text));
+        const apply = button('替换聊天回复', () => void changeReply(target, versions.get(withExample), target.rawText));
         const copy = button('复制精修稿', async () => {
             try {
                 await navigator.clipboard.writeText(versions.get(withExample));
@@ -574,6 +601,7 @@ function mount() {
         writingReply = true;
         updateBusy();
         try {
+            if (!restoring) checkPolishSource(target);
             await writePolishedReply(st, target, text, expectedText, context);
             if (!samePolishTarget(context(), target, text)) return;
             undoReply = restoring ? undefined : { target, applied: text };
@@ -770,7 +798,7 @@ function mount() {
     ui['polish-generate'].addEventListener('click', () => startPolish(true));
     ui['polish-baseline'].addEventListener('click', () => startPolish(false));
     ui['polish-undo'].addEventListener('click', () => {
-        if (undoReply) void changeReply(undoReply.target, undoReply.target.text, undoReply.applied, true);
+        if (undoReply) void changeReply(undoReply.target, undoReply.target.rawText, undoReply.applied, true);
     });
     panel.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
