@@ -48,9 +48,13 @@ test('rewrites with or without an example and sends the same target and requirem
         assert.match(rewrite.prompt[0].content, /本次采用重写方式/);
         assert.doesNotMatch(rewrite.prompt[0].content, /只精修|完整精修正文|轻修|句段可以照录/);
         assert.match(rewrite.prompt[0].content, /只输出完整重写正文/);
+        assert.match(rewrite.prompt[0].content, /以整段叙述或整轮对白为单位/);
         for (const revision of [polish, rewrite]) {
             assert.equal(revision.prompt[0].content.includes('把【文风示范】和原稿中作用相近的片段对照'), Boolean(polishExample));
             assert.equal(revision.prompt[0].content.includes('用实际范文核对'), Boolean(polishExample));
+            assert.equal(revision.prompt[0].content.includes('连说的长句、重复、口头词和停顿'), Boolean(polishExample));
+            assert.match(revision.prompt[0].content, /核对事实的范围和确定程度/);
+            assert.match(revision.prompt[0].content, /独立标题就原样保留一次/);
         }
         assert.equal(rewrite.prompt[1].content.includes('【参考范文用词】'), Boolean(polishExample));
         assert.equal(rewrite.prompt[1].content, polish.prompt[1].content.replace('【待精修的回复 #', '【待重写的回复 #'));
