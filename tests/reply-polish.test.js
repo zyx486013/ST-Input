@@ -40,31 +40,31 @@ test('adds optional diction guidance only with an example and keeps the handwrit
     assert.match(prompt('范文', true), /【参考范文用词】[\s\S]+【本次精修要求】\n"只改旁白"/);
 });
 
-test('uses the old draft as scene reference when no chat context was selected', () => {
+test('rebuilds full passages with or without a style example or chat context', () => {
     const source = { history: getChatMessages([{ mes: original }]), historyCount: 0, polishNotes: '只改对白' };
     for (const polishExample of ['', '示范原文\n示范结尾']) {
         const options = { ...source, polishExample, matchExampleDiction: true };
         const polish = prepareReplyPolish(options);
         const rewrite = prepareReplyPolish({ ...options, rewrite: true });
         assert.equal(polish.prompt[0].content.includes('按原稿自身的语气轻修'), !polishExample);
-        assert.match(rewrite.prompt[0].content, /本次采用重写方式/);
+        assert.match(rewrite.prompt[0].content, /大修【待大修的回复】/);
         assert.doesNotMatch(rewrite.prompt[0].content, /只精修|完整精修正文|轻修|句段可以照录/);
-        assert.match(rewrite.prompt[0].content, /只输出完整重写正文/);
-        assert.match(rewrite.prompt[0].content, /为同一轮独立写一份全新的回复/);
-        assert.match(rewrite.prompt[0].content, /用户若限定范围或要求保留指定原句/);
-        assert.equal(rewrite.prompt[0].content.includes('从【文风示范】相邻的自然段观察'), Boolean(polishExample));
+        assert.match(rewrite.prompt[0].content, /只输出完整大修正文/);
+        assert.match(rewrite.prompt[0].content, /一整段叙事或一轮完整对白/);
+        assert.match(rewrite.prompt[0].content, /只修对白时逐字保留旁白/);
+        assert.equal(rewrite.prompt[0].content.includes('怎样用上一段提到的细节带出下一段'), Boolean(polishExample));
         assert.equal(polish.prompt[0].content.includes('怎样用上一段提到的细节带出下一段'), Boolean(polishExample));
         assert.match(polish.prompt[0].content, /留在它们原本出现的场景/);
         assert.doesNotMatch(rewrite.prompt[0].content, /留在它们原本出现的场景/);
         assert.equal(rewrite.prompt[1].content.includes('【参考范文用词】'), Boolean(polishExample));
-        assert.match(rewrite.prompt[1].content, /【参考原稿】\n> 原回复/);
+        assert.match(rewrite.prompt[1].content, /【待大修的回复】\n> 原回复/);
         assert.match(rewrite.prompt[1].content, /【本次精修要求】\n"只改对白"/);
         assert.doesNotMatch(rewrite.prompt[1].content, /【本轮用户输入】/);
         assert.deepEqual(rewrite.target, polish.target);
     }
 });
 
-test('writes a fresh reply from the latest preceding user message and includes the old draft on request', () => {
+test('treats the original as authoritative over preceding chat when rebuilding passages', () => {
     const history = getChatMessages([
         { mes: '上一轮的任务', is_user: true }, { mes: '已建立的前文' },
         { mes: '续写这一轮\n保留对白口吻', is_user: true }, { mes: original },
@@ -74,16 +74,15 @@ test('writes a fresh reply from the latest preceding user message and includes t
     const { target, prompt } = prepareReplyPolish(source);
     assert.equal(target.text, original);
     assert.match(prompt[1].content, /已建立的前文/);
-    assert.match(prompt[1].content, /【本轮用户输入】\n> 续写这一轮\n> 保留对白口吻/);
+    assert.match(prompt[1].content, /【指定参考消息】\n.*续写这一轮/);
     assert.equal(prompt[1].content.split('续写这一轮').length, 2);
-    assert.doesNotMatch(prompt[1].content, /后续尚未答复的任务|【参考原稿】|原回复/);
-    assert.doesNotMatch(prompt[0].content, /【参考原稿】/);
-    const withDraft = prepareReplyPolish({ ...source, referenceDraft: true });
-    assert.match(withDraft.prompt[1].content, /【参考原稿】\n> 原回复/);
-    assert.match(withDraft.prompt[1].content, /【本轮用户输入】\n> 续写这一轮/);
+    assert.doesNotMatch(prompt[1].content, /后续尚未答复的任务|【参考原稿】|【本轮用户输入】/);
+    assert.match(prompt[0].content, /用原稿确定这些内容，聊天记录只供核对/);
+    assert.match(prompt[0].content, /查清每件事的顺序、因果和结果/);
+    assert.ok(prompt[1].content.endsWith('【待大修的回复】\n> 原回复「你来了。」\n>\n> 她把门拉开。'));
     const contextDisabled = prepareReplyPolish({ ...source, historyCount: 0 });
     assert.doesNotMatch(contextDisabled.prompt[1].content, /续写这一轮|已建立的前文/);
-    assert.match(contextDisabled.prompt[1].content, /【参考原稿】\n> 原回复/);
+    assert.match(contextDisabled.prompt[1].content, /【待大修的回复】\n> 原回复/);
 });
 
 test('uses display-transformed text for the target and context, keeping the original for restoration', () => {
