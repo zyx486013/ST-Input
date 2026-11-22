@@ -16,12 +16,15 @@
 
 #st-input-panel {
     /* Stay in the composer layout when SillyTavern disables backdrop filters. */
+    position: relative;
     order: 24;
     display: grid;
+    align-content: start;
     gap: 0.55em;
     width: min(100%, 40rem);
     max-height: min(48dvh, 28rem);
     margin-inline-start: auto;
+    margin-inline-end: 0;
     margin-block-end: 0.4rem;
     overflow: auto;
     overscroll-behavior: contain;
@@ -152,6 +155,25 @@
 #st-input-panel.st-input-polish-open {
     width: min(100%, 54rem);
     max-height: min(68dvh, 42rem);
+}
+
+#st-input-panel.st-input-fullscreen {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: clamp(0.75rem, 2vw, 2rem);
+    border: 0;
+    border-radius: 0;
+    background: linear-gradient(var(--SmartThemeBlurTintColor, #252525), var(--SmartThemeBlurTintColor, #252525)), #252525;
+}
+
+#st-input-panel.st-input-fullscreen .st-input-compare-text {
+    max-height: 56dvh;
 }
 
 #st-input-panel .st-input-compare {

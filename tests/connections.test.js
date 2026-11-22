@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { completeWithSillyTavern } from '../connections.js';
 
@@ -7,9 +8,9 @@ const prompt = [
     { role: 'user', content: '草稿内容' },
 ];
 
-function setup({ preset, active, failure, url = 'https://assistant.example.com/v1' } = {}) {
+function setup({ preset, active, failure, model = 'fixture-model', url = 'https://assistant.example.com/v1' } = {}) {
     const profile = {
-        id: 'assistant', api: 'custom', model: 'fixture-model', preset: '助手预设', 'api-url': url,
+        id: 'assistant', api: 'custom', model, preset: '助手预设', 'api-url': url,
     };
     const sent = [];
     const st = {
@@ -142,6 +143,16 @@ test('uses a larger saved preset budget for a non-custom profile', async () => {
     assert.equal(sent[0][4], undefined);
 });
 
+test('uses the completion token limit for saved native OpenAI reasoning models', async () => {
+    const { st, sent } = setup({ model: 'gpt-5.6-terra', preset: { openai_max_tokens: 300 } });
+    st.CONNECT_API_MAP.custom.source = 'openai';
+    st.extractMessageFromData = data => data.content;
+    await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, {
+        withDetails: true, requestedPolishTokens: 8192, parameters: { reasoning_effort: 'max' },
+    });
+    assert.deepEqual(sent[0][4], { reasoning_effort: 'max', max_tokens: undefined, max_completion_tokens: 8192 });
+});
+
 test('updates the effective token limit in custom include lists in SillyTavern order', async () => {
     const { st, sent } = setup({ preset: {
         custom_url: 'https://assistant.example.com/v1',
@@ -156,23 +167,57 @@ test('updates the effective token limit in custom include lists in SillyTavern o
 });
 
 test('gives polishing extra output space on the current chat API while keeping the usual rewrite request', async () => {
-    const requests = [];
+    const requests = [], unrelated = { messages: [{ content: '另一条聊天' }], max_tokens: 300 };
+    const eventSource = new EventEmitter();
     const st = {
         mainApi: 'openai',
+        eventSource,
+        eventTypes: { CHAT_COMPLETION_SETTINGS_READY: 'settings' },
         chatCompletionSettings: { openai_max_tokens: 300 },
         generateRaw: async request => { requests.push(request); return '普通草稿'; },
-        generateRawData: async request => { requests.push(request); return { text: '精修正文', stop_reason: 'end_turn' }; },
+        generateRawData: async ({ prompt }) => {
+            eventSource.emit('settings', unrelated);
+            const payload = { messages: [...prompt], max_completion_tokens: st.chatCompletionSettings.openai_max_tokens };
+            eventSource.emit('settings', payload);
+            requests.push(payload);
+            return { text: '精修正文', stop_reason: 'end_turn' };
+        },
         extractMessageFromData: data => data.text,
     };
     assert.equal(await completeWithSillyTavern(st, prompt, 'current'), '普通草稿');
     assert.deepEqual(await completeWithSillyTavern(st, prompt, 'current', '', undefined, 2400, { withDetails: true }), {
-        text: '精修正文', finishReason: 'end_turn',
+        text: '精修正文', finishReason: 'end_turn', outputTokens: 2400,
     });
     st.chatCompletionSettings.openai_max_tokens = 4096;
-    await completeWithSillyTavern(st, prompt, 'current', '', undefined, 2400, { withDetails: true });
+    await completeWithSillyTavern(st, prompt, 'current', '', undefined, 2400, {
+        withDetails: true, requestedPolishTokens: 1024, parameters: { reasoning_effort: 'max' },
+    });
     assert.deepEqual(requests, [
         { prompt, trimNames: false },
-        { prompt, api: 'openai', responseLength: 2400 },
-        { prompt, api: 'openai' },
+        { messages: prompt, max_completion_tokens: 2400 },
+        { messages: prompt, max_completion_tokens: 1024, reasoning_effort: 'max' },
     ]);
+    assert.equal(unrelated.max_tokens, 300);
+    assert.equal(eventSource.listenerCount('settings'), 0);
+    assert.equal(st.chatCompletionSettings.openai_max_tokens, 4096);
+});
+
+test('merges saved Custom parameters only for the polishing request', async () => {
+    const preset = {
+        custom_url: 'https://assistant.example.com/v1',
+        custom_include_body: '{"reasoning_effort":"low","max_completion_tokens":512,"temperature":0.6}',
+        custom_exclude_body: '["reasoning_effort","max_tokens"]',
+    };
+    const { st, sent } = setup({ preset });
+    st.extractMessageFromData = data => data.content;
+    await completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, {
+        withDetails: true, requestedPolishTokens: 8192, parameters: { reasoning_effort: 'max', thinking_token_budget: 4096 },
+        yaml: { parse: JSON.parse, stringify: JSON.stringify },
+    });
+    const request = sent[0][4];
+    assert.deepEqual(JSON.parse(request.custom_include_body), {
+        reasoning_effort: 'max', max_completion_tokens: 8192, temperature: 0.6, thinking_token_budget: 4096,
+    });
+    assert.deepEqual(JSON.parse(request.custom_exclude_body), ['max_tokens']);
+    assert.match(preset.custom_include_body, /"low"/);
 });

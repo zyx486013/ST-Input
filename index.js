@@ -2,11 +2,12 @@ import { getRegexedString, regex_placement } from '/scripts/extensions/regex/eng
 import { completeWithSillyTavern } from './connections.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
+import { validatePolishParameters } from './server/polish-parameters.mjs';
 import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISHED_REPLY, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
 
 const KEY = 'st-input';
 const SERVICE = '/api/plugins/st-input';
-const DEFAULTS = { connection: 'current', profileId: '', history: true, historyCount: 8 };
+const DEFAULTS = { connection: 'current', profileId: '', history: true, historyCount: 8, fullscreen: true };
 const context = () => SillyTavern.getContext();
 const settings = () => context().extensionSettings[KEY] ??= { ...DEFAULTS };
 
@@ -64,7 +65,9 @@ function getProfiles() {
 
 async function complete(messages, connection, profileId, signal, maxTokens = 1600, options) {
     if (connection === 'custom') {
-        const data = options?.withDetails ? { messages, withDetails: true } : { messages };
+        const data = options?.withDetails ? {
+            messages, withDetails: true, outputTokens: options.requestedPolishTokens, parameters: options.parameters,
+        } : { messages };
         const result = await service('generate', { method: 'POST', data, signal });
         return options?.withDetails ? result : result.text;
     }
@@ -81,7 +84,7 @@ function mount() {
     const config = { ...DEFAULTS, ...stored };
     config.polishExamples ??= [];
 
-    const panel = element('section');
+    const panel = element('dialog');
     panel.id = 'st-input-panel';
     panel.hidden = true;
     panel.setAttribute('aria-label', '输入助手');
@@ -89,6 +92,7 @@ function mount() {
         <div class="st-input-bar">
             <strong>输入助手</strong>
             <span data-st="connection-label"></span>
+            <button class="menu_button" type="button" data-st="layout"></button>
             <button class="menu_button" type="button" data-st="close" aria-label="关闭输入助手">关闭</button>
         </div>
         <div class="st-input-actions" data-st="actions"></div>
@@ -108,9 +112,15 @@ function mount() {
                 <button class="menu_button" type="button" data-st="polish-delete-example" hidden>删除示范</button>
             </div>
             <label>本次精修要求 <textarea class="text_pole st-input-draft" rows="2" maxlength="${MAX_POLISH_NOTES}" data-st="polish-notes" placeholder="可留空，例如缩短对白，用动作表现犹豫"></textarea></label>
-            <label data-st="polish-budget-field" hidden>精修输出上限（tokens）
+            <label>精修输出上限（tokens）
                 <input type="number" class="text_pole" min="1" max="65536" step="1" placeholder="自动" data-st="polish-budget">
             </label>
+            <details data-st="polish-parameter-options">
+                <summary>精修附加参数</summary>
+                <label>请求参数（YAML 或 JSON）
+                    <textarea class="text_pole st-input-draft" rows="3" maxlength="8192" data-st="polish-parameters" placeholder="reasoning_effort: max"></textarea>
+                </label>
+            </details>
             <div class="st-input-actions">
                 <button class="menu_button" type="button" data-st="polish-generate">按示范精修</button>
                 <button class="menu_button" type="button" data-st="polish-baseline">无示范精修</button>
@@ -205,6 +215,7 @@ function mount() {
     function writeDraft(value) {
         textarea.value = value;
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        if (!panel.hidden && config.fullscreen) setOpen(false);
         textarea.focus();
     }
 
@@ -214,8 +225,19 @@ function mount() {
         undo.hidden = false;
     }
 
-    function setOpen(open) {
+    function renderPanelLayout(open) {
+        if (panel.open) panel.close();
+        panel.classList.toggle('st-input-fullscreen', config.fullscreen);
+        ui.layout.textContent = config.fullscreen ? '小窗口' : '全屏';
+        if (config.fullscreen) document.body.append(panel);
+        else form.prepend(panel);
         panel.hidden = !open;
+        if (open && config.fullscreen) panel.showModal();
+        else if (open) panel.show();
+    }
+
+    function setOpen(open) {
+        renderPanelLayout(open);
         launch.setAttribute('aria-expanded', String(open));
         if (open) {
             refreshReferences();
@@ -257,11 +279,12 @@ function mount() {
 
     function renderConnection() {
         ui['profile-field'].hidden = config.connection !== 'profile';
-        ui['polish-budget-field'].hidden = config.connection !== 'profile';
         ui.custom.hidden = config.connection !== 'custom';
         const st = context();
         const mainModel = st.mainApi === 'openai' ? st.getChatCompletionModel?.() : '';
         const profile = config.connection === 'profile' ? getProfiles().find(item => item.id === config.profileId) : null;
+        const connectionApi = config.connection === 'profile' ? st.CONNECT_API_MAP?.[profile?.api]?.selected : st.mainApi;
+        ui['polish-parameter-options'].hidden = config.connection !== 'custom' && connectionApi !== 'openai';
         ui['connection-label'].textContent = {
             current: mainModel ? `当前连接 · ${mainModel}` : '当前聊天连接',
             profile: profile ? [profile.name, profile.model].filter(Boolean).join(' · ') : '选择连接配置',
@@ -403,10 +426,24 @@ function mount() {
     function startPolish(withExample) {
         const source = getSource(POLISH_MODE);
         if (!withExample) source.polishExample = '';
-        if (config.connection === 'profile') {
-            const field = ui['polish-budget'];
-            if (!field.reportValidity()) return;
-            source.requestedPolishTokens = field.value ? field.valueAsNumber : undefined;
+        const field = ui['polish-budget'];
+        if (!field.reportValidity()) return;
+        source.requestedPolishTokens = field.value ? field.valueAsNumber : undefined;
+        const text = ui['polish-parameter-options'].hidden ? '' : ui['polish-parameters'].value.trim();
+        if (text) {
+            let parameters;
+            try {
+                parameters = SillyTavern.libs.yaml.parse(text);
+            } catch {
+                setStatus('精修附加参数格式有误，请检查 YAML 或 JSON。');
+                return;
+            }
+            try {
+                source.parameters = validatePolishParameters(parameters);
+            } catch (error) {
+                setStatus(error.message);
+                return;
+            }
         }
         ui['preview-mode'].value = POLISH_MODE;
         void run(source);
@@ -436,10 +473,17 @@ function mount() {
             pending = { controller: new AbortController(), mode: source.mode };
             updateBusy();
             setStatus('正在处理…');
+            const signal = pending.controller.signal;
+            if (polish && config.connection === 'custom' && (source.requestedPolishTokens || Object.keys(source.parameters ?? {}).length)) {
+                const saved = customConfig ?? await service('config', { signal });
+                signal.throwIfAborted();
+                if (!saved.polishParameters) throw new Error('自定义 API 的精修参数需要新版服务端插件，请更新插件并重启 SillyTavern。');
+            }
             const maxTokens = polish ? Math.min(8192, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
-            const result = await complete(prompt, config.connection, config.profileId, pending.controller.signal, maxTokens, {
+            const result = await complete(prompt, config.connection, config.profileId, signal, maxTokens, {
                 withDetails: polish,
                 requestedPolishTokens: source.requestedPolishTokens,
+                parameters: source.parameters,
                 yaml: SillyTavern.libs?.yaml,
             });
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
@@ -765,6 +809,16 @@ function mount() {
     }
 
     ui.close.addEventListener('click', () => setOpen(false));
+    ui.layout.addEventListener('click', () => {
+        config.fullscreen = !config.fullscreen;
+        saveSettings();
+        renderPanelLayout(true);
+        ui.layout.focus({ preventScroll: true });
+    });
+    panel.addEventListener('cancel', event => {
+        event.preventDefault();
+        setOpen(false);
+    });
     loadPolishExample(config.polishExampleSelection);
     ui['polish-examples'].addEventListener('change', () => {
         const name = ui['polish-examples'].value;
@@ -790,6 +844,11 @@ function mount() {
         const field = ui['polish-budget'];
         if (!field.validity.valid) return;
         config.polishMaxTokens = field.value ? field.valueAsNumber : null;
+        saveSettings();
+    });
+    ui['polish-parameters'].value = config.polishParameters ?? '';
+    ui['polish-parameters'].addEventListener('change', () => {
+        config.polishParameters = ui['polish-parameters'].value;
         saveSettings();
     });
     for (const input of [ui['polish-example'], ui['polish-notes']]) {
