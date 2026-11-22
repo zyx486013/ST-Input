@@ -42,8 +42,7 @@
 }
 
 #st-input-panel .st-input-bar,
-#st-input-panel .st-input-actions,
-#st-input-panel .st-input-options {
+#st-input-panel .st-input-actions {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
@@ -63,12 +62,12 @@
     white-space: normal;
     overflow-wrap: anywhere;
     margin: 0;
-    padding: 0.25em 0.55em;
+    padding: 0.4em 0.75em;
 }
 
 #st-input-panel .menu_button:disabled {
     opacity: 0.55;
-    cursor: wait;
+    cursor: default;
 }
 
 #st-input-panel :is(label, select, input, textarea) {
@@ -82,18 +81,6 @@
 
 #st-input-panel [data-st="polish-budget"] {
     width: 7em;
-}
-
-#st-input-panel .st-input-reference {
-    display: flex;
-    align-items: center;
-    flex: 1 1 13em;
-    gap: 0.45em;
-    white-space: nowrap;
-}
-
-#st-input-panel .st-input-reference select {
-    flex: 1;
 }
 
 #st-input-panel summary {
@@ -130,7 +117,7 @@
     border-radius: 0.35em;
 }
 
-#st-input-panel [data-st="result"]:empty,
+#st-input-panel .st-input-result:empty,
 #st-input-panel .st-input-status:empty {
     display: none;
 }
@@ -213,5 +200,181 @@
 @media (max-width: 540px) {
     #st-input-panel .st-input-compare {
         grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+#st-input-panel .st-input-shell {
+    width: min(100%, 70rem);
+    min-width: 0;
+    margin-inline: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.9rem;
+    --st-line: color-mix(in srgb, currentColor 22%, transparent);
+    --st-surface: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+#st-input-panel .st-input-bar {
+    gap: 0.45rem;
+}
+
+#st-input-panel .st-input-bar strong {
+    font-size: 1.15em;
+}
+
+#st-input-panel .st-input-bar span {
+    min-width: 0;
+    flex: 1 1 0;
+    margin-inline: 0.25rem;
+}
+
+#st-input-panel .st-input-nav {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--st-line);
+}
+
+#st-input-panel .st-input-nav button {
+    padding: 0.55em 0.95em;
+    border: 0;
+    border-bottom: 3px solid transparent;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+#st-input-panel .st-input-nav button[aria-pressed="true"] {
+    font-weight: 700;
+    border-bottom-color: currentColor;
+}
+
+#st-input-panel .st-input-nav button:hover,
+#st-input-panel summary:hover {
+    background-color: var(--st-surface);
+}
+
+#st-input-panel .st-input-work,
+#st-input-panel .st-input-utilities,
+#st-input-panel .st-input-compare section {
+    min-width: 0;
+}
+
+#st-input-panel .st-input-work {
+    align-self: start;
+    padding: clamp(0.7rem, 2vw, 1.35rem);
+    border: 1px solid var(--st-line);
+    border-radius: 0.65rem;
+    background: var(--st-surface);
+}
+
+#st-input-panel [data-workspace] {
+    display: grid;
+    gap: 0.85rem;
+    margin: 0;
+}
+
+#st-input-panel .st-input-style-mode {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35em;
+    margin: 0;
+    padding: 0;
+    min-inline-size: 0;
+    border: none;
+}
+
+#st-input-panel .st-input-style-mode legend,
+#st-input-panel .st-input-example-tools label > :is(select, input, textarea),
+#st-input-panel .st-input-draft {
+    display: block;
+    margin: 0.35em 0 0;
+}
+
+#st-input-panel .st-input-style-mode legend {
+    margin: 0 0 0.4em;
+    padding: 0;
+}
+
+#st-input-panel .st-input-style-mode label,
+#st-input-panel .st-input-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
+#st-input-panel .st-input-style-mode label {
+    cursor: pointer;
+    padding: 0.4em 0.75em;
+    border: 1px solid var(--st-line);
+    border-radius: 0.4em;
+}
+
+#st-input-panel .st-input-style-mode label:has(:checked) {
+    background: var(--st-surface);
+    border-color: currentColor;
+}
+
+#st-input-panel .st-input-style-mode input { margin: 0; }
+
+#st-input-panel .st-input-example-tools {
+    display: grid;
+    gap: 0.4rem;
+    padding-inline-start: 0.8rem;
+    border-inline-start: 2px solid var(--st-line);
+}
+
+#st-input-panel .st-input-work small {
+    font-weight: normal;
+    opacity: 0.8;
+}
+
+#st-input-panel .st-input-primary {
+    justify-self: start;
+    padding-inline: 1.3em;
+    background: #e3e2de;
+    color: #161616;
+    text-shadow: none;
+    font-weight: 700;
+}
+
+#st-input-panel .st-input-utilities {
+    align-self: start;
+}
+
+#st-input-panel .st-input-utilities > details {
+    border-bottom: 1px solid var(--st-line);
+}
+
+#st-input-panel summary {
+    padding-block: 0.55em;
+}
+
+#st-input-panel .st-input-utilities > details[open] {
+    padding-bottom: 0.65rem;
+}
+
+#st-input-panel .st-input-status {
+    line-height: 1.5;
+}
+
+#st-input-panel [data-st="request-actions"]:has(> :not([hidden])) {
+    margin-block-start: 0.75rem;
+}
+
+#st-input-panel .st-input-compare select,
+#st-input-panel .st-input-actions select {
+    width: auto;
+    max-width: 100%;
+}
+
+@media (min-width: 800px) {
+    #st-input-panel.st-input-fullscreen .st-input-shell {
+        grid-template-columns: minmax(0, 1fr) minmax(14rem, 17rem);
+        column-gap: 1.5rem;
+    }
+
+    #st-input-panel.st-input-fullscreen :is(.st-input-bar, .st-input-nav) {
+        grid-column: 1 / -1;
     }
 }

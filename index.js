@@ -89,78 +89,105 @@ function mount() {
     panel.hidden = true;
     panel.setAttribute('aria-label', '输入助手');
     panel.innerHTML = `
-        <div class="st-input-bar">
-            <strong>输入助手</strong>
-            <span data-st="connection-label"></span>
-            <button class="menu_button" type="button" data-st="layout"></button>
-            <button class="menu_button" type="button" data-st="close" aria-label="关闭输入助手">关闭</button>
-        </div>
-        <div class="st-input-actions" data-st="actions"></div>
-        <div class="st-input-options">
-            <label><input type="checkbox" data-st="history"> 使用聊天上下文</label>
-            <label>最近消息数 <input type="number" class="text_pole" min="1" max="40" step="1" data-st="history-count"></label>
-            <label class="st-input-reference">参考旧消息 <select class="text_pole" data-st="reference"></select></label>
-        </div>
-        <div id="st-input-polish" class="st-input-config" data-st="polish" hidden>
-            <div class="st-input-options">
-                <label class="st-input-reference">已保存示范 <select class="text_pole" data-st="polish-examples"></select></label>
-                <label class="st-input-reference">示范名称 <input type="text" class="text_pole" maxlength="${MAX_EXAMPLE_NAME}" data-st="polish-example-name"></label>
-            </div>
-            <label>文风示范 <textarea class="text_pole st-input-draft" rows="3" maxlength="${MAX_EXAMPLE}" data-st="polish-example" placeholder="粘贴一段你认可的对白或叙述"></textarea></label>
-            <div class="st-input-actions">
-                <button class="menu_button" type="button" data-st="polish-save-example">保存示范</button>
-                <button class="menu_button" type="button" data-st="polish-delete-example" hidden>删除示范</button>
-            </div>
-            <label>本次精修要求 <textarea class="text_pole st-input-draft" rows="2" maxlength="${MAX_POLISH_NOTES}" data-st="polish-notes" placeholder="可留空，例如缩短对白，用动作表现犹豫"></textarea></label>
-            <label>精修输出上限（tokens）
-                <input type="number" class="text_pole" min="1" max="65536" step="1" placeholder="自动" data-st="polish-budget">
-            </label>
-            <details data-st="polish-parameter-options">
-                <summary>精修附加参数</summary>
-                <label>请求参数（YAML 或 JSON）
-                    <textarea class="text_pole st-input-draft" rows="3" maxlength="8192" data-st="polish-parameters" placeholder="reasoning_effort: max"></textarea>
-                </label>
-            </details>
-            <div class="st-input-actions">
-                <button class="menu_button" type="button" data-st="polish-generate">按示范精修</button>
-                <button class="menu_button" type="button" data-st="polish-baseline">无示范精修</button>
-                <button class="menu_button" type="button" data-st="polish-undo" hidden>恢复原回复</button>
-            </div>
-        </div>
-        <details data-st="preview">
-            <summary>提示词预览</summary>
-            <label>预览操作 <select class="text_pole" data-st="preview-mode"></select></label>
-            <div class="st-input-preview" data-st="preview-content"></div>
-        </details>
-        <div role="status" aria-live="polite" class="st-input-status" data-st="status"></div>
-        <div data-st="result"></div>
-        <details data-st="settings">
-            <summary>连接设置</summary>
-            <div class="st-input-config">
-                <label>连接方式
-                    <select class="text_pole" data-st="connection">
-                        <option value="current">跟随当前聊天连接</option>
-                        <option value="profile">使用 SillyTavern 已保存的连接</option>
-                        <option value="custom">自定义 API</option>
-                    </select>
-                </label>
-                <label data-st="profile-field">连接配置 <select class="text_pole" data-st="profiles"></select></label>
-                <div class="st-input-config" data-st="custom">
-                    <label>API 地址 <input class="text_pole" data-st="url" type="url" autocomplete="off" placeholder="https://api.example.com/v1"></label>
-                    <label>API Key <input class="text_pole" data-st="key" type="password" autocomplete="new-password" maxlength="4096"></label>
-                    <label><input data-st="clear-key" type="checkbox"> 清除已保存的 Key</label>
-                    <label>模型 ID <input class="text_pole" data-st="model" type="text" autocomplete="off" maxlength="240" list="st-input-models"></label>
-                    <datalist id="st-input-models" data-st="model-list"></datalist>
-                    <div class="st-input-actions">
-                        <button class="menu_button" type="button" data-st="load-custom" hidden>读取服务端配置</button>
-                        <button class="menu_button" type="button" data-st="load-models">获取模型</button>
-                        <button class="menu_button" type="button" data-st="save-custom">保存自定义 API</button>
+        <div class="st-input-shell">
+            <header class="st-input-bar">
+                <strong>输入助手</strong>
+                <span data-st="connection-label"></span>
+                <button class="menu_button" type="button" data-st="layout"></button>
+                <button class="menu_button" type="button" data-st="close" aria-label="关闭输入助手">关闭</button>
+            </header>
+            <nav class="st-input-nav" aria-label="选择工具">
+                <button type="button" data-view="draft">写输入</button>
+                <button type="button" data-view="polish">精修回复</button>
+                <button type="button" data-view="logic">逻辑检查</button>
+            </nav>
+            <div class="st-input-work">
+                <section data-workspace="draft">
+                    <div class="st-input-actions" data-st="actions"></div>
+                </section>
+                <section data-workspace="logic" hidden>
+                    <button class="menu_button st-input-primary" type="button" data-st="logic">检查回复逻辑</button>
+                </section>
+                <section id="st-input-polish" class="st-input-config" data-workspace="polish" data-st="polish" hidden>
+                    <fieldset class="st-input-style-mode">
+                        <legend>文风示范</legend>
+                        <label><input type="radio" name="st-input-use-example" data-st="without-example">无示范</label>
+                        <label><input type="radio" name="st-input-use-example" data-st="with-example">有示范</label>
+                    </fieldset>
+                    <div class="st-input-example-tools" data-st="example-tools" hidden>
+                        <label>选择示范<select class="text_pole" data-st="polish-examples"></select></label>
+                        <details data-st="example-editor">
+                            <summary data-st="example-editor-label">编辑示范</summary>
+                            <div class="st-input-config">
+                                <label>示范正文<textarea class="text_pole st-input-draft" rows="3" maxlength="${MAX_EXAMPLE}" data-st="polish-example" placeholder="粘贴一段你认可的对白或叙述"></textarea></label>
+                                <label>示范名称<input type="text" class="text_pole" maxlength="${MAX_EXAMPLE_NAME}" data-st="polish-example-name" placeholder="保存到列表时填写"></label>
+                                <div class="st-input-actions">
+                                    <button class="menu_button" type="button" data-st="polish-save-example">保存示范</button>
+                                    <button class="menu_button" type="button" data-st="polish-delete-example" hidden>删除示范</button>
+                                </div>
+                            </div>
+                        </details>
                     </div>
-                </div>
-                <div><button class="menu_button" type="button" data-st="test">测试连接</button></div>
-                <div role="status" aria-live="polite" class="st-input-status" data-st="config-status"></div>
+                    <label>本次精修要求 <small>选填</small><textarea class="text_pole st-input-draft" rows="2" maxlength="${MAX_POLISH_NOTES}" data-st="polish-notes" placeholder="例如：缩短对白，用动作表现犹豫"></textarea></label>
+                    <div class="st-input-actions">
+                        <button class="menu_button st-input-primary" type="button" data-st="polish-generate">开始精修</button>
+                        <button class="menu_button" type="button" data-st="polish-undo" hidden>恢复原回复</button>
+                    </div>
+                </section>
+                <div class="st-input-actions" data-st="request-actions"></div>
             </div>
-        </details>`;
+            <div class="st-input-utilities">
+                <details data-st="polish-options" hidden>
+                    <summary>精修参数</summary>
+                    <div class="st-input-config">
+                        <label>输出上限（tokens） <input type="number" class="text_pole" min="1" max="65536" step="1" placeholder="自动" data-st="polish-budget"></label>
+                        <label data-st="polish-parameter-options">附加参数（YAML 或 JSON）
+                            <textarea class="text_pole st-input-draft" rows="3" maxlength="8192" data-st="polish-parameters" placeholder="reasoning_effort: max"></textarea>
+                        </label>
+                    </div>
+                </details>
+                <details>
+                    <summary>聊天上下文</summary>
+                    <div class="st-input-config">
+                        <label class="st-input-check"><input type="checkbox" data-st="history">使用聊天上下文</label>
+                        <label>最近消息数 <input type="number" class="text_pole" min="1" max="40" step="1" data-st="history-count"></label>
+                        <label>参考旧消息 <select class="text_pole" data-st="reference"></select></label>
+                    </div>
+                </details>
+                <details data-st="settings">
+                    <summary>连接设置</summary>
+                    <div class="st-input-config">
+                        <label>连接方式
+                            <select class="text_pole" data-st="connection">
+                                <option value="current">跟随当前聊天连接</option>
+                                <option value="profile">使用 SillyTavern 已保存的连接</option>
+                                <option value="custom">自定义 API</option>
+                            </select>
+                        </label>
+                        <label data-st="profile-field">连接配置 <select class="text_pole" data-st="profiles"></select></label>
+                        <div class="st-input-config" data-st="custom">
+                            <label>API 地址 <input class="text_pole" data-st="url" type="url" autocomplete="off" placeholder="https://api.example.com/v1"></label>
+                            <label>API Key <input class="text_pole" data-st="key" type="password" autocomplete="new-password" maxlength="4096"></label>
+                            <label><input data-st="clear-key" type="checkbox"> 清除已保存的 Key</label>
+                            <label>模型 ID <input class="text_pole" data-st="model" type="text" autocomplete="off" maxlength="240" list="st-input-models"></label>
+                            <datalist id="st-input-models" data-st="model-list"></datalist>
+                            <div class="st-input-actions">
+                                <button class="menu_button" type="button" data-st="load-custom" hidden>读取服务端配置</button>
+                                <button class="menu_button" type="button" data-st="load-models">获取模型</button>
+                                <button class="menu_button" type="button" data-st="save-custom">保存自定义 API</button>
+                            </div>
+                        </div>
+                        <div><button class="menu_button" type="button" data-st="test">测试连接</button></div>
+                        <div role="status" aria-live="polite" class="st-input-status" data-st="config-status"></div>
+                    </div>
+                </details>
+                <details data-st="preview">
+                    <summary>提示词预览</summary>
+                    <label>预览操作 <select class="text_pole" data-st="preview-mode"></select></label>
+                    <div class="st-input-preview" data-st="preview-content"></div>
+                </details>
+            </div>
+        </div>`;
 
     const ui = Object.fromEntries([...panel.querySelectorAll('[data-st]')].map(node => [node.dataset.st, node]));
     const launch = button('输入助手', () => setOpen(panel.hidden));
@@ -180,7 +207,18 @@ function mount() {
     let customConfig;
     let lastPrompt;
 
-    const setStatus = message => { ui.status.textContent = message; };
+    const views = [...panel.querySelectorAll('[data-view]')];
+    const workspaces = [...panel.querySelectorAll('[data-workspace]')];
+    if (!views.some(node => node.dataset.view === config.workspace)) config.workspace = 'draft';
+    const outputs = new Map(workspaces.map(section => {
+        const status = element('div', null, 'st-input-status');
+        status.setAttribute('role', 'status');
+        const result = element('div', null, 'st-input-result');
+        section.append(status, result);
+        return [section.dataset.workspace, { status, result }];
+    }));
+    const output = () => outputs.get(config.workspace);
+    const setStatus = message => { output().status.textContent = message; };
     const setConfigStatus = message => { ui['config-status'].textContent = message; };
     const saveSettings = () => {
         Object.assign(settings(), config);
@@ -199,18 +237,24 @@ function mount() {
     undo.hidden = true;
 
     for (const [mode, label] of Object.entries({ ...MODES, [LOGIC_MODE]: LOGIC_LABEL, [POLISH_MODE]: POLISH_LABEL })) {
-        const action = button(label, () => mode === POLISH_MODE ? openPolish() : start(mode));
-        action.dataset.mode = mode;
-        if (mode === POLISH_MODE) {
-            action.setAttribute('aria-expanded', 'false');
-            action.setAttribute('aria-controls', 'st-input-polish');
+        if (mode in MODES) {
+            const action = button(label, () => start(mode));
+            action.dataset.mode = mode;
+            ui.actions.append(action);
         }
-        ui.actions.append(action);
         ui['preview-mode'].append(new Option(label, mode));
     }
     const cancel = button('取消', () => clearRequest('已取消。', pending?.mode === POLISH_MODE));
     cancel.hidden = true;
-    ui.actions.append(cancel, undo);
+    ui['request-actions'].append(cancel, undo);
+    ui.logic.addEventListener('click', () => start(LOGIC_MODE));
+    for (const view of views) {
+        view.addEventListener('click', () => {
+            config.workspace = view.dataset.view;
+            saveSettings();
+            renderWorkspace();
+        });
+    }
 
     function writeDraft(value) {
         textarea.value = value;
@@ -244,7 +288,7 @@ function mount() {
             refreshProfiles();
             renderConnection();
             if (config.connection === 'custom' && !customConfig) loadCustom();
-            ui.actions.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
+            views.find(view => view.dataset.view === config.workspace)?.focus({ preventScroll: true });
         } else {
             ui.key.value = '';
             ui['clear-key'].checked = false;
@@ -295,10 +339,11 @@ function mount() {
     function updateBusy() {
         const busy = Boolean(pending) || writingReply;
         for (const action of ui.actions.querySelectorAll('[data-mode]')) action.disabled = busy;
-        ui['polish-generate'].disabled = busy || !ui['polish-example'].value.trim();
-        ui['polish-baseline'].disabled = busy;
+        for (const view of views) view.disabled = busy;
+        ui.logic.disabled = busy;
+        ui['polish-generate'].disabled = busy || (ui['with-example'].checked && !ui['polish-example'].value.trim());
         ui['polish-undo'].disabled = busy;
-        const apply = ui.result.querySelector('[data-polish-apply]');
+        const apply = output().result.querySelector('[data-polish-apply]');
         if (apply) apply.disabled = busy || apply.dataset.polishApply === 'false';
         cancel.hidden = !pending;
         for (const key of ['load-custom', 'load-models', 'save-custom', 'test']) ui[key].disabled = checking;
@@ -311,7 +356,10 @@ function mount() {
         pending?.controller.abort();
         if (!keepComparison) {
             comparison = undefined;
-            ui.result.replaceChildren();
+            for (const { status, result } of outputs.values()) {
+                result.replaceChildren();
+                status.textContent = '';
+            }
         }
         lastPrompt = undefined;
         refreshPreview();
@@ -325,7 +373,7 @@ function mount() {
         const source = { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
         if (mode === POLISH_MODE) {
             source.displayText = message => getPolishDisplayText(st, message);
-            source.polishExample = ui['polish-example'].value.trim();
+            source.polishExample = ui['with-example'].checked ? ui['polish-example'].value.trim() : '';
             source.polishNotes = ui['polish-notes'].value.trim();
         }
         return source;
@@ -354,28 +402,24 @@ function mount() {
     }
 
     function start(mode) {
-        showPolishForm(false);
-        comparison = undefined;
         ui['preview-mode'].value = mode;
         void run(getSource(mode));
     }
 
-    function showPolishForm(open) {
-        ui.polish.hidden = !open;
-        panel.classList.toggle('st-input-polish-open', open);
-        ui.actions.querySelector('[data-mode="polish"]').setAttribute('aria-expanded', String(open));
+    function renderWorkspace() {
+        const current = config.workspace;
+        for (const view of views) view.setAttribute('aria-pressed', String(view.dataset.view === current));
+        for (const section of workspaces) section.hidden = section.dataset.workspace !== current;
+        panel.classList.toggle('st-input-polish-open', current === POLISH_MODE);
+        ui['polish-options'].hidden = current !== POLISH_MODE;
+        ui['preview-mode'].value = current === 'draft'
+            ? (lastPrompt?.mode in MODES ? lastPrompt.mode : 'rewrite') : current;
+        refreshPreview();
     }
 
-    function openPolish() {
-        if (!ui.polish.hidden) {
-            showPolishForm(false);
-            clearRequest();
-            return;
-        }
-        showPolishForm(true);
-        ui['preview-mode'].value = POLISH_MODE;
-        clearRequest();
-        ui['polish-example'].focus({ preventScroll: true });
+    function renderStyleMode() {
+        ui['example-tools'].hidden = !ui['with-example'].checked;
+        refreshPolishExamplePreview();
     }
 
     function refreshPolishExamplePreview() {
@@ -389,6 +433,7 @@ function mount() {
         ui['polish-examples'].replaceChildren(new Option('新建示范', ''), ...options);
         ui['polish-examples'].value = config.polishExampleSelection ?? '';
         ui['polish-delete-example'].hidden = !config.polishExampleSelection;
+        ui['example-editor-label'].textContent = config.polishExampleSelection ? '编辑示范' : '填写示范';
     }
 
     function loadPolishExample(name) {
@@ -397,6 +442,7 @@ function mount() {
         ui['polish-example-name'].value = selected?.name ?? '';
         ui['polish-example'].value = selected?.text ?? '';
         renderPolishExampleOptions();
+        ui['example-editor'].open = !selected;
         refreshPolishExamplePreview();
     }
 
@@ -420,27 +466,33 @@ function mount() {
         ui['polish-example-name'].value = name;
         renderPolishExampleOptions();
         saveSettings();
+        ui['example-editor'].open = false;
+        ui['polish-examples'].focus();
         setStatus('已保存示范。');
     }
 
-    function startPolish(withExample) {
+    function startPolish() {
         const source = getSource(POLISH_MODE);
-        if (!withExample) source.polishExample = '';
         const field = ui['polish-budget'];
-        if (!field.reportValidity()) return;
+        if (!field.validity.valid) {
+            ui['polish-options'].open = true;
+            field.reportValidity();
+            return;
+        }
         source.requestedPolishTokens = field.value ? field.valueAsNumber : undefined;
         const text = ui['polish-parameter-options'].hidden ? '' : ui['polish-parameters'].value.trim();
         if (text) {
-            let parameters;
             try {
-                parameters = SillyTavern.libs.yaml.parse(text);
-            } catch {
-                setStatus('精修附加参数格式有误，请检查 YAML 或 JSON。');
-                return;
-            }
-            try {
+                let parameters;
+                try {
+                    parameters = SillyTavern.libs.yaml.parse(text);
+                } catch {
+                    throw new Error('精修附加参数格式有误，请检查 YAML 或 JSON。');
+                }
                 source.parameters = validatePolishParameters(parameters);
             } catch (error) {
+                ui['polish-options'].open = true;
+                ui['polish-parameters'].focus();
                 setStatus(error.message);
                 return;
             }
@@ -459,7 +511,7 @@ function mount() {
         const st = context();
         const chatId = st.getCurrentChatId();
         const polish = source.mode === POLISH_MODE;
-        if (!polish) ui.result.replaceChildren();
+        if (!polish) output().result.replaceChildren();
         lastPrompt = undefined;
         setStatus('');
         try {
@@ -631,7 +683,7 @@ function mount() {
         baseline.addEventListener('change', compare);
         compare();
         stack.append(controls, editor, columns, summary, actions);
-        ui.result.replaceChildren(stack);
+        output().result.replaceChildren(stack);
     }
 
     async function changeReply(target, text, expectedText, restoring = false) {
@@ -668,7 +720,7 @@ function mount() {
 
     function renderLogicFindings(findings, target) {
         if (!findings.length) {
-            ui.result.replaceChildren(element('p', '这次检查未发现可定位的逻辑问题。'));
+            output().result.replaceChildren(element('p', '这次检查未发现可定位的逻辑问题。'));
             return;
         }
         const insert = selected => {
@@ -698,7 +750,7 @@ function mount() {
             stack.append(group);
         }
         if (findings.length > 1) stack.append(button('全部加入草稿', () => insert(findings)));
-        ui.result.replaceChildren(stack);
+        output().result.replaceChildren(stack);
     }
 
     function renderDraft(value, source) {
@@ -717,11 +769,11 @@ function mount() {
                 return;
             }
             replaceDraft(edited.value);
-            ui.result.replaceChildren();
+            output().result.replaceChildren();
             setStatus('已填入输入框。');
         });
         let expected = source.draft;
-        ui.result.replaceChildren(label, fill);
+        output().result.replaceChildren(label, fill);
     }
 
     function renderResult(result, source) {
@@ -734,7 +786,7 @@ function mount() {
             for (const suggestion of result.suggestions) {
                 list.append(button(suggestion, () => renderDraft(suggestion, source)));
             }
-            ui.result.replaceChildren(list);
+            output().result.replaceChildren(list);
             return;
         }
 
@@ -763,7 +815,7 @@ function mount() {
             const answers = fields.map(({ question, answer }) => ({ question, answer: answer.value.trim() })).filter(pair => pair.answer);
             void run(source, answers, true);
         }));
-        ui.result.replaceChildren(stack);
+        output().result.replaceChildren(stack);
     }
 
     function customForm() {
@@ -819,7 +871,18 @@ function mount() {
         event.preventDefault();
         setOpen(false);
     });
+    ui['with-example'].checked = config.polishUseExample ?? Boolean(config.polishExampleSelection);
+    ui['without-example'].checked = !ui['with-example'].checked;
+    for (const radio of [ui['with-example'], ui['without-example']]) {
+        radio.addEventListener('change', () => {
+            config.polishUseExample = ui['with-example'].checked;
+            saveSettings();
+            renderStyleMode();
+        });
+    }
     loadPolishExample(config.polishExampleSelection);
+    renderStyleMode();
+    renderWorkspace();
     ui['polish-examples'].addEventListener('change', () => {
         const name = ui['polish-examples'].value;
         const active = config.polishExamples.find(example => example.name === config.polishExampleSelection);
@@ -854,8 +917,7 @@ function mount() {
     for (const input of [ui['polish-example'], ui['polish-notes']]) {
         input.addEventListener('input', refreshPolishExamplePreview);
     }
-    ui['polish-generate'].addEventListener('click', () => startPolish(true));
-    ui['polish-baseline'].addEventListener('click', () => startPolish(false));
+    ui['polish-generate'].addEventListener('click', startPolish);
     ui['polish-undo'].addEventListener('click', () => {
         if (undoReply) void changeReply(undoReply.target, undoReply.target.rawText, undoReply.applied, true);
     });
@@ -884,7 +946,7 @@ function mount() {
     ui.preview.addEventListener('toggle', refreshPreview);
     ui['preview-mode'].addEventListener('change', refreshPreview);
     textarea.addEventListener('input', () => {
-        if (!panel.hidden && !pending && !ui.result.childElementCount) refreshPreview();
+        if (!panel.hidden && !pending && !output().result.childElementCount) refreshPreview();
     });
 
     ui.connection.value = config.connection;
