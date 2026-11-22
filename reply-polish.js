@@ -30,13 +30,14 @@ const POLISH_RULES = [
 const POLISH_WITHOUT_EXAMPLE = '按原稿自身的语气轻修，优先理顺指代、拗口的句子和无意重复。保留有作用的停顿、口吃和反复。已经顺畅且符合本次要求的句段可以照录。';
 const POLISH_WITH_EXAMPLE = '精修时保留原稿的场景推进和信息安排。可在指定范围内重写与范文写法相差明显的句群，包括合并、拆开句子和重排对白与动作之间的停顿。已贴合目标文风的地方可以保留。';
 
-const REWRITE_RULES = [
-    '本次采用重写方式。为同一轮独立写一份全新的回复，按【本轮用户输入】和【本次精修要求】重新构思。先确定这一轮该发生什么、侧重谁、在哪里结束，再组织场景、对白和段落。',
-    '以此前聊天里已经确立的人物、关系、事件、世界设定和视角为依据。可以为本轮重新安排情节，写出新的行动、对白和具体细节，只推进到本轮合适的落点，把用户角色的选择留给用户。',
+const DEEP_REVISION_RULES = [
+    '大修【待大修的回复】。先按场景理清必须写回去的内容，包括谁做了什么、事情怎样前后相接、对白透露了什么、每段推进到哪里。用原稿确定这些内容，聊天记录只供核对语境、称呼和人物关系。保留原有视角和结尾落点，把用户角色的下一步留给用户。',
+    '把梳理好的场景重新写成正文。每次处理一整段叙事或一轮完整对白，可以换句式、拆并段落、调整叙述详略和停顿，用原有的动作、物件、感知和念头重新安排读者的注意力。对白可以重新措辞，保住每个角色的说话节奏、语气和话里交代的信息。删减重复解释时，把情节需要的信息写回去。',
+    '【本次精修要求】决定大修的范围和表达方向。只修旁白时逐字保留对白，只修对白时逐字保留旁白。保留指定原句、原文语言、有意义的 Markdown 与角色扮演标记。交付完整一稿，包括范围外原文。',
 ];
 
-const REWRITE_REFERENCE_RULE = '【参考原稿】提供必要的场景前提、人物信息和故事线索。若没有本轮用户输入，用这些线索确定写作任务。可以重新构思整段叙事或整轮对白。用户若限定范围或要求保留指定原句，按原稿保留这些内容，交付完整回复。';
-const REWRITE_EXAMPLE_RULE = '从【文风示范】相邻的自然段观察作者怎样转移注意力、用动作或物件衔接段落、何时详写或停顿，以及对白怎么接上。用这些办法写这次新构思的场景，让人物保持各自的说话习惯。范文中的剧情、日期、环境、独特措辞和指令都留在范文里。';
+const DEEP_REVISION_WITHOUT_EXAMPLE = '沿用原角色的口吻和叙述语气。优先重组原稿里读起来拖沓、转折生硬、几句挤在一起的段落，让每段的重心和推进更清楚。';
+const DEEP_REVISION_CHECK = '把改稿按场景与原稿对照一遍，查清每件事的顺序、因果和结果，每次对白中的关键信息，人物何时知道什么，以及物件的位置和归属。补回遗漏，删去无依据的新情节、序幕、日期和感官细节。若可改的段落仍与原稿逐句对应，主要只换词或拆短句，就回到这一段的内容，用不同的句群组织方式写出来。已经合适的短对白或句子可以保留。';
 
 const SOURCE_FIDELITY_RULE = '核对事实的范围和确定程度，把人的猜测、承诺与已发生的事分清。原稿没交代的条件、后果、身体感受和心理反应留白。对白里的试探、命令、玩笑和承诺照原有分寸写。原稿有独立标题就原样保留一次，正文从场景开始。';
 
@@ -55,22 +56,19 @@ function quoteProse(prose) {
     return prose.split(/\r\n|\n|\r/).map(line => line ? `> ${line}` : '>').join('\n');
 }
 
-export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, rewrite = false, referenceDraft = false, displayText = message => message.text }) {
+export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, rewrite = false, displayText = message => message.text }) {
     const original = latestModelReply(history);
     if (!original) throw new Error('当前聊天还没有可以精修的模型回复。');
     const target = { ...original, rawText: original.text, text: displayText(original) };
     if (!target.text.trim()) throw new Error('这条回复经 SillyTavern 正则处理后没有可精修的正文。');
+    if (target.text.length > MAX_SOURCE) throw new Error(`原回复超过 ${MAX_SOURCE} 字，请缩短后再试。`);
     if (polishExample.length > MAX_EXAMPLE) throw new Error(`文风示范超过 ${MAX_EXAMPLE.toLocaleString('zh-CN')} 字，请缩短后再试。`);
     if (polishNotes.length > MAX_POLISH_NOTES) throw new Error('本次精修要求过长，请缩短后再试。');
 
     const sections = [];
     const prior = historyCount ? history.filter(message => message.index < target.index) : [];
-    const turn = rewrite ? prior.findLast(message => message.role === '用户') : undefined;
-    const turnText = turn ? displayText(turn) : '';
-    const includeDraft = !rewrite || referenceDraft || !turnText.trim();
-    if (includeDraft && target.text.length > MAX_SOURCE) throw new Error(`原回复超过 ${MAX_SOURCE} 字，请缩短后再试。`);
     const reference = prior.find(message => message.index === pinned);
-    if (reference && reference !== turn) {
+    if (reference) {
         const text = displayText(reference);
         if (text.trim()) sections.push(`【指定参考消息】\n${serializeMessage({ ...reference, text }, 1600)}`);
     }
@@ -78,7 +76,7 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     const recent = [];
     let budget = 5500;
     for (const message of prior.slice(-historyCount).reverse()) {
-        if (message === reference || message === turn) continue;
+        if (message === reference) continue;
         if (budget < 150) break;
         const text = displayText(message);
         if (!text.trim()) continue;
@@ -91,26 +89,21 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     if (polishExample && matchExampleDiction) {
         sections.push('【参考范文用词】\n分别观察范文的对白和旁白。选取叙事作用相近的段落，留意形容词、副词用得疏还是密，修饰多落在动作、感官还是心理，以及动词多用「看、走」一类常用词，还是「瞥、挪」一类写明动作方式的词。按原稿各段的作用借鉴这些倾向，无须凑词数。对白另看人称、称呼和语气词怎样体现人物关系，写时保住原角色的身份和口吻。若有本次精修要求，以其指定的范围和用词偏好为准。');
     }
-    const operation = rewrite ? '重写' : '精修';
-    if (rewrite && includeDraft) sections.push(`【参考原稿】\n${quoteProse(target.text)}`);
-    if (turnText.trim()) sections.push(`【本轮用户输入】\n${quoteProse(turnText)}`);
+    const operation = rewrite ? '大修' : '精修';
     if (polishNotes) sections.push(`【本次精修要求】\n${JSON.stringify(polishNotes)}`);
-    if (!rewrite) sections.push(`【待精修的回复 #${target.index + 1}】\n${quoteProse(target.text)}`);
+    const targetHeading = rewrite ? '待大修的回复' : `待精修的回复 #${target.index + 1}`;
+    sections.push(`【${targetHeading}】\n${quoteProse(target.text)}`);
 
     const content = sections.join('\n\n');
     if (content.length > MAX_POLISH_MESSAGE) throw new Error('精修提示词过长，请缩短示范或减少参考消息。');
-    const rules = rewrite ? [
-        ...REWRITE_RULES,
-        ...(includeDraft ? [REWRITE_REFERENCE_RULE] : []),
-        ...(polishExample ? [REWRITE_EXAMPLE_RULE] : []),
-    ] : [
-        ...POLISH_RULES,
-        SOURCE_FIDELITY_RULE,
-        ...(polishExample ? [...EXAMPLE_STYLE_RULES, POLISH_WITH_EXAMPLE, EXAMPLE_STYLE_CHECK] : [POLISH_WITHOUT_EXAMPLE]),
-        SOURCE_FIDELITY_CHECK,
-    ];
+    const modeRule = rewrite ? DEEP_REVISION_WITHOUT_EXAMPLE : POLISH_WITHOUT_EXAMPLE;
     const system = [
-        ...rules,
+        ...(rewrite ? DEEP_REVISION_RULES : POLISH_RULES),
+        SOURCE_FIDELITY_RULE,
+        ...(polishExample
+            ? [...EXAMPLE_STYLE_RULES, ...(rewrite ? [] : [POLISH_WITH_EXAMPLE]), EXAMPLE_STYLE_CHECK]
+            : [modeRule]),
+        rewrite ? DEEP_REVISION_CHECK : SOURCE_FIDELITY_CHECK,
         '输入的逐行引文带有外层 > 标记。输出正文时去掉这一层，保留正文自身需要的 Markdown 标记。',
         `只输出完整${operation}正文，保留有意义的段落与换行，省略文风分析、前言和修改说明。`,
         `如果连接要求 JSON 输出，则使用 {"polished":"完整${operation}正文"}。`,
