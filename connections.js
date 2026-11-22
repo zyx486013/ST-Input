@@ -1,4 +1,8 @@
 const CUSTOM_REQUEST_FIELDS = ['custom_include_headers', 'custom_include_body', 'custom_exclude_body'];
+const NATIVE_POLISH_FIELDS = new Set([
+    'reasoning_effort', 'include_reasoning', 'verbosity', 'temperature', 'top_p', 'top_k',
+    'frequency_penalty', 'presence_penalty', 'seed', 'stop',
+]);
 
 function apiRoot(value) {
     if (!value) return null;
@@ -28,17 +32,17 @@ function customRequestParameters(st, profile, preset) {
     }));
 }
 
-function prepareProfileBudget(preset, overrides, suggested, requested, yaml) {
+function preparePolishRequest(preset, overrides, suggested, requested, parameters, yaml, minimum) {
     const configured = Number(preset?.openai_max_tokens ?? preset?.genamt);
-    let maxTokens = requested ?? Math.max(suggested, 4096, Number.isSafeInteger(configured) ? configured : 0);
-    if (!overrides?.custom_include_body || !yaml) return maxTokens;
+    let maxTokens = requested ?? Math.max(suggested, minimum, Number.isSafeInteger(configured) ? configured : 0);
+    if (!overrides || !yaml) return maxTokens;
 
     let body;
     try {
-        body = yaml.parse(overrides.custom_include_body);
+        body = yaml.parse(overrides.custom_include_body || '');
     } catch {
         // SillyTavern handles invalid custom YAML in the saved connection.
-        return maxTokens;
+        if (!Object.keys(parameters).length) return maxTokens;
     }
     if (Array.isArray(body)) {
         // SillyTavern merges YAML list entries in order, with later values taking precedence.
@@ -48,11 +52,58 @@ function prepareProfileBudget(preset, overrides, suggested, requested, yaml) {
         const value = Number(body?.[key]);
         return Number.isSafeInteger(value) && value > 0;
     });
-    if (!tokenFields.length) return maxTokens;
-    if (requested === undefined) maxTokens = Math.max(maxTokens, ...tokenFields.map(key => Number(body[key])));
-    for (const key of tokenFields) body[key] = maxTokens;
-    overrides.custom_include_body = yaml.stringify(body);
+    if (tokenFields.length || Object.keys(parameters).length) {
+        if (requested === undefined) maxTokens = Math.max(maxTokens, ...tokenFields.map(key => Number(body[key])));
+        const limits = Object.fromEntries(tokenFields.map(key => [key, maxTokens]));
+        overrides.custom_include_body = yaml.stringify({ ...(body && typeof body === 'object' ? body : {}), ...parameters, ...limits });
+    }
+    if (overrides.custom_exclude_body && Object.keys(parameters).length) {
+        try {
+            const excluded = yaml.parse(overrides.custom_exclude_body);
+            const keys = Array.isArray(excluded) ? excluded : typeof excluded === 'string' ? [excluded] : Object.keys(excluded ?? {});
+            const remaining = keys.filter(key => !Object.hasOwn(parameters, key));
+            if (remaining.length !== keys.length) overrides.custom_exclude_body = yaml.stringify(remaining);
+        } catch {
+            // SillyTavern ignores invalid exclusion YAML.
+        }
+    }
     return maxTokens;
+}
+
+function checkPolishParameters(api, source, parameters) {
+    const keys = Object.keys(parameters);
+    if (keys.length && api !== 'openai') throw new Error('精修附加参数适用于 Chat Completion 连接。');
+    if (source !== 'custom' && keys.some(key => !NATIVE_POLISH_FIELDS.has(key))) {
+        throw new Error('此连接可设置推理强度和常见生成参数。其他 API 参数请使用自定义 Chat Completion 连接。');
+    }
+}
+
+async function completeCurrentPolish(st, messages, maxTokens, requested, parameters, yaml) {
+    const api = st.mainApi;
+    const prompt = messages.map(message => ({ ...message }));
+    if (api !== 'openai') {
+        const data = await st.generateRawData({ prompt, api, responseLength: requested });
+        return { ...completionDetails(st, data, api), outputTokens: requested };
+    }
+
+    const event = st.eventTypes.CHAT_COMPLETION_SETTINGS_READY;
+    let outputTokens;
+    const configure = data => {
+        // ST keeps the text message objects when it constructs its request.
+        if (!data.messages?.some(message => prompt.includes(message))) return;
+        const custom = data.chat_completion_source === 'custom';
+        outputTokens = preparePolishRequest(st.chatCompletionSettings, custom ? data : undefined, maxTokens, requested, parameters, yaml, 0);
+        if (Object.hasOwn(data, 'max_completion_tokens')) data.max_completion_tokens = outputTokens;
+        if (Object.hasOwn(data, 'max_tokens') || !Object.hasOwn(data, 'max_completion_tokens')) data.max_tokens = outputTokens;
+        if (!custom) Object.assign(data, parameters);
+    };
+    st.eventSource.on(event, configure);
+    try {
+        const data = await st.generateRawData({ prompt, api });
+        return { ...completionDetails(st, data, api), outputTokens };
+    } finally {
+        st.eventSource.removeListener(event, configure);
+    }
 }
 
 const KNOWN_FAILURES = [
@@ -86,7 +137,7 @@ function completionDetails(st, data, api) {
     };
 }
 
-export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens, { withDetails = false, requestedPolishTokens, yaml } = {}) {
+export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens, { withDetails = false, requestedPolishTokens, parameters = {}, yaml } = {}) {
     const useProfile = connection === 'profile';
     const service = st.ConnectionManagerRequestService;
     if (useProfile && (!service || !profileId)) {
@@ -108,7 +159,21 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
             ? st.getPresetManager?.(selectedApi ?? 'openai')?.getCompletionPresetByName(profile.preset)
             : undefined;
         if (api?.source === 'custom') overrides = customRequestParameters(st, profile, preset);
-        if (withDetails) maxTokens = prepareProfileBudget(preset, overrides, maxTokens, requestedPolishTokens, yaml);
+        if (withDetails) {
+            checkPolishParameters(selectedApi, api?.source, parameters);
+            maxTokens = preparePolishRequest(preset, overrides, maxTokens, requestedPolishTokens, parameters, yaml, 4096);
+            if (api?.source !== 'custom' && Object.keys(parameters).length) overrides = { ...parameters };
+            // Match ST's native Chat Completion limit field for the OpenAI models it converts.
+            const model = profile.model ?? '';
+            const source = api?.source;
+            if ((['openai', 'azure_openai', 'openrouter'].includes(source) && /gpt-(?:5|6-astra)/.test(model))
+                || (['openai', 'azure_openai'].includes(source) && /^o[134]/.test(model))
+                || (source === 'openrouter' && /^openai\/o[134]/.test(model))) {
+                overrides = { ...overrides, max_tokens: undefined, max_completion_tokens: maxTokens };
+            }
+        }
+    } else if (withDetails) {
+        checkPolishParameters(st.mainApi, st.chatCompletionSettings?.chat_completion_source, parameters);
     }
 
     try {
@@ -119,10 +184,7 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
             return withDetails ? { ...completionDetails(st, result, selectedApi), outputTokens: maxTokens } : result.content;
         }
         if (withDetails) {
-            const request = { prompt: messages, api: st.mainApi };
-            const limit = Number(st.chatCompletionSettings?.openai_max_tokens);
-            if (st.mainApi === 'openai' && maxTokens > limit) request.responseLength = maxTokens;
-            return completionDetails(st, await st.generateRawData(request), st.mainApi);
+            return await completeCurrentPolish(st, messages, maxTokens, requestedPolishTokens, parameters, yaml);
         }
         return await st.generateRaw({ prompt: messages, trimNames: false });
     } catch (error) {

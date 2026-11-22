@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
+import { isPolishTokenLimit, validatePolishParameters } from '../server/polish-parameters.mjs';
 import { callUpstream, normalizeApiUrl, resolveApiHost } from '../server/upstream.mjs';
+
+test('keeps the request fields and token limit separate from supplemental polish parameters', () => {
+    assert.deepEqual(validatePolishParameters({ reasoning_effort: 'max' }), { reasoning_effort: 'max' });
+    assert.throws(() => validatePolishParameters(['reasoning_effort: max']), /键值对象/);
+    assert.throws(() => validatePolishParameters({ messages: [] }), /messages/);
+    assert.throws(() => validatePolishParameters({ max_tokens: 8192 }), /max_tokens/);
+    assert.equal(isPolishTokenLimit(8192), true);
+    assert.equal(isPolishTokenLimit(65537), false);
+});
 
 test('accepts base URLs and complete chat routes and rejects embedded credentials', () => {
     assert.equal(normalizeApiUrl(' https://example.org/service/v1/chat/completions/ '), 'https://example.org/service/v1');
@@ -57,6 +67,12 @@ test('requests an allowed local OpenAI endpoint, handles model lists and refuses
     assert.deepEqual(await callUpstream(config, 'generate', {
         messages: [{ role: 'user', content: '只有推理' }], withDetails: true,
     }), { text: '', finishReason: 'length' });
+    assert.deepEqual(await callUpstream(config, 'generate', {
+        messages, withDetails: true, outputTokens: 8192, parameters: { reasoning_effort: 'max' },
+    }), { text: '正常', finishReason: 'stop', outputTokens: 8192 });
+    assert.deepEqual(JSON.parse(calls.at(-1).body), {
+        reasoning_effort: 'max', model: 'small', messages, stream: false, max_tokens: 8192,
+    });
     await assert.rejects(callUpstream({ ...config, baseUrl: `${origin}/redirect` }, 'models'), /HTTP 302/);
-    assert.equal(calls.length, 5);
+    assert.equal(calls.length, 6);
 });

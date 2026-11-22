@@ -14,7 +14,7 @@ https://github.com/zyx486013/ST-Input
 
 ### 在输入助手里配置自定义 API
 
-自定义模式需要配套服务端插件。将仓库的 `server` 目录复制为 **SillyTavern 根目录下的 `plugins/st-input`**，确认其中直接包含 `index.mjs` 和 `upstream.mjs`。在 SillyTavern 的 `config.yaml` 中设置 `enableServerPlugins: true`，然后重启 SillyTavern。更新前端扩展后，手动复制新版服务端文件并重启即可更新服务端插件。
+自定义模式需要配套服务端插件。将仓库的 `server` 目录复制为 **SillyTavern 根目录下的 `plugins/st-input`**，确认其中直接包含 `index.mjs`、`upstream.mjs` 和 `polish-parameters.mjs`。在 SillyTavern 的 `config.yaml` 中设置 `enableServerPlugins: true`，然后重启 SillyTavern。更新前端扩展后，手动复制新版服务端文件并重启即可更新服务端插件。
 
 用 ST 管理员账号打开「输入助手 → 连接设置 → 自定义 API」，填入：
 
@@ -62,6 +62,8 @@ node server.js
 
 ## 精修回复
 
+输入助手默认全屏打开。顶部「小窗口」可切回输入框旁的面板，布局选择会保存。
+
 1. 打开「输入助手 → 精修回复」。选择「新建示范」，填写名称和正文，点击「保存示范」。可以用下拉列表在多份示范间切换，保存对现有示范的修改，或删除指定示范。旧版保存的单份示范会迁移为「原文风示范」。也可填写本次要求，例如「缩短对白，用动作表现犹豫」。
 2. 点击「按示范精修」或「无示范精修」。两种请求沿用同一套连接设置。关闭「使用聊天上下文」后，请求只包含待改回复、所选示范和本次要求。「提示词预览」可查看刚发送的版本。跟随当前 Chat Completion 连接时，精修会按原回复长度为本次请求预留输出空间。API 报告达到输出上限时，面板会提示调整回复长度。
 3. 左右并排查看文本，删除线标记删改，下划线标记新增。生成两版后，可以直接比较有示范稿和无示范稿。精修稿可以编辑、复制，或替换当前聊天里的原回复。
@@ -69,7 +71,15 @@ node server.js
 
 送去精修的原回复、指定参考消息和最近聊天，以及对比用的原回复，都按照当前 SillyTavern 的「改变聊天显示」正则处理。精修时保留 Markdown，恢复原回复时写回原始聊天文本。
 
-使用 SillyTavern 已保存的连接时，可在精修面板设置「精修输出上限（tokens）」。留空时根据原稿和连接配置自动选择额度，最低为 4096 tokens。填写数值可覆盖精修请求里的输出额度，包括自定义 Chat Completion 预设中已有的 `max_tokens` 或 `max_completion_tokens`。额度只用于精修。收到截断时，面板会显示本次请求额度。
+在精修面板可设置「精修输出上限（tokens）」。留空时，已保存的连接按原稿和预设自动选取额度，最低为 4096 tokens。跟随当前连接时沿用相应自动额度，自定义 API 留空时使用提供商默认值。手动额度只用于精修，适用于自定义 Chat Completion 预设中已有的 `max_tokens` 或 `max_completion_tokens`。
+
+展开「精修附加参数」，可按 YAML 或 JSON 填写模型支持的参数。例如支持 `max` 的 Chat Completion 服务可输入：
+
+```yaml
+reasoning_effort: max
+```
+
+附加参数会保存并用于两种精修。自定义 Chat Completion 连接可填写服务商提供的生成参数，原生 Chat Completion 连接经 SillyTavern 转发常见生成参数。使用输入助手的独立「自定义 API」时，需要更新配套服务端插件以使用手动额度和附加参数。
 
 ## 开发验证
 
