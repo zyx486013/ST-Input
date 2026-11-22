@@ -2,7 +2,7 @@ import { getRegexedString, regex_placement } from '/scripts/extensions/regex/eng
 import { completeWithSillyTavern } from './connections.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
-import { validatePolishParameters } from './server/polish-parameters.mjs';
+import { MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
 import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISHED_REPLY, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
 
 const KEY = 'st-input';
@@ -119,7 +119,8 @@ function mount() {
                         <details data-st="example-editor">
                             <summary data-st="example-editor-label">编辑示范</summary>
                             <div class="st-input-config">
-                                <label>示范正文<textarea class="text_pole st-input-draft" rows="3" maxlength="${MAX_EXAMPLE}" data-st="polish-example" placeholder="粘贴一段你认可的对白或叙述"></textarea></label>
+                                <label>示范正文<textarea class="text_pole st-input-draft" rows="3" data-st="polish-example" aria-describedby="st-input-example-count" placeholder="粘贴一段你认可的对白或叙述"></textarea></label>
+                                <small id="st-input-example-count" data-st="example-count"></small>
                                 <label>示范名称<input type="text" class="text_pole" maxlength="${MAX_EXAMPLE_NAME}" data-st="polish-example-name" placeholder="保存到列表时填写"></label>
                                 <div class="st-input-actions">
                                     <button class="menu_button" type="button" data-st="polish-save-example">保存示范</button>
@@ -373,7 +374,8 @@ function mount() {
         const source = { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
         if (mode === POLISH_MODE) {
             source.displayText = message => getPolishDisplayText(st, message);
-            source.polishExample = ui['with-example'].checked ? ui['polish-example'].value.trim() : '';
+            const example = ui['polish-example'].value;
+            source.polishExample = ui['with-example'].checked && example.trim() ? example : '';
             source.polishNotes = ui['polish-notes'].value.trim();
         }
         return source;
@@ -428,6 +430,16 @@ function mount() {
         if (ui['preview-mode'].value === POLISH_MODE) refreshPreview();
     }
 
+    function updateExampleLength() {
+        const field = ui['polish-example'];
+        const length = field.value.length;
+        const count = `${length.toLocaleString('zh-CN')} / ${MAX_EXAMPLE.toLocaleString('zh-CN')} 字`;
+        const error = length > MAX_EXAMPLE ? '示范超出字数上限，请缩短。' : '';
+        ui['example-count'].textContent = error ? `${count} · ${error}` : count;
+        field.setAttribute('aria-invalid', String(Boolean(error)));
+        field.setCustomValidity(error);
+    }
+
     function renderPolishExampleOptions() {
         const options = config.polishExamples.map(({ name }) => new Option(name, name));
         ui['polish-examples'].replaceChildren(new Option('新建示范', ''), ...options);
@@ -443,10 +455,12 @@ function mount() {
         ui['polish-example'].value = selected?.text ?? '';
         renderPolishExampleOptions();
         ui['example-editor'].open = !selected;
+        updateExampleLength();
         refreshPolishExamplePreview();
     }
 
     function savePolishExample() {
+        if (!ui['polish-example'].reportValidity()) return;
         const name = ui['polish-example-name'].value.trim();
         const text = ui['polish-example'].value;
         if (!name || !text.trim()) {
@@ -473,6 +487,11 @@ function mount() {
 
     function startPolish() {
         const source = getSource(POLISH_MODE);
+        if (source.polishExample && !ui['polish-example'].validity.valid) {
+            ui['example-editor'].open = true;
+            ui['polish-example'].reportValidity();
+            return;
+        }
         const field = ui['polish-budget'];
         if (!field.validity.valid) {
             ui['polish-options'].open = true;
@@ -526,10 +545,17 @@ function mount() {
             updateBusy();
             setStatus('正在处理…');
             const signal = pending.controller.signal;
-            if (polish && config.connection === 'custom' && (source.requestedPolishTokens || Object.keys(source.parameters ?? {}).length)) {
-                const saved = customConfig ?? await service('config', { signal });
-                signal.throwIfAborted();
-                if (!saved.polishParameters) throw new Error('自定义 API 的精修参数需要新版服务端插件，请更新插件并重启 SillyTavern。');
+            if (polish && config.connection === 'custom') {
+                const needsParameters = source.requestedPolishTokens || Object.keys(source.parameters ?? {}).length;
+                const messageLength = prompt[1].content.length;
+                if (needsParameters || messageLength > MAX_STANDARD_MESSAGE) {
+                    const saved = customConfig ?? await service('config', { signal });
+                    signal.throwIfAborted();
+                    if (messageLength > (saved.maxPolishMessage ?? MAX_STANDARD_MESSAGE)) {
+                        throw new Error('此长示范需要新版自定义 API 服务端插件。请更新插件并重启 SillyTavern。');
+                    }
+                    if (needsParameters && !saved.polishParameters) throw new Error('自定义 API 的精修参数需要新版服务端插件，请更新插件并重启 SillyTavern。');
+                }
             }
             const maxTokens = polish ? Math.min(8192, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
             const result = await complete(prompt, config.connection, config.profileId, signal, maxTokens, {
@@ -914,9 +940,11 @@ function mount() {
         config.polishParameters = ui['polish-parameters'].value;
         saveSettings();
     });
-    for (const input of [ui['polish-example'], ui['polish-notes']]) {
-        input.addEventListener('input', refreshPolishExamplePreview);
-    }
+    ui['polish-example'].addEventListener('input', () => {
+        updateExampleLength();
+        refreshPolishExamplePreview();
+    });
+    ui['polish-notes'].addEventListener('input', refreshPolishExamplePreview);
     ui['polish-generate'].addEventListener('click', startPolish);
     ui['polish-undo'].addEventListener('click', () => {
         if (undoReply) void changeReply(undoReply.target, undoReply.target.rawText, undoReply.applied, true);

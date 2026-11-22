@@ -1,9 +1,10 @@
 import { latestModelReply } from './logic-check.js';
 import { getChatMessages, jsonCandidate, serializeMessage } from './prompts.js';
+import { MAX_POLISH_MESSAGE } from './server/polish-parameters.mjs';
 
 export const POLISH_MODE = 'polish';
 export const POLISH_LABEL = '精修回复';
-export const MAX_EXAMPLE = 6000;
+export const MAX_EXAMPLE = 32000;
 export const MAX_EXAMPLE_NAME = 60;
 export const MAX_POLISH_NOTES = 1200;
 export const MAX_POLISHED_REPLY = 12000;
@@ -14,7 +15,7 @@ export function migratePolishExample(settings) {
     const previous = settings.polishExample;
     if (!Array.isArray(settings.polishExamples) && typeof previous === 'string' && previous.trim()) {
         const name = '原文风示范';
-        settings.polishExamples = [{ name, text: previous.slice(0, MAX_EXAMPLE) }];
+        settings.polishExamples = [{ name, text: previous }];
         settings.polishExampleSelection = name;
     }
     delete settings.polishExample;
@@ -36,9 +37,8 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     const target = { ...original, rawText: original.text, text: displayText(original) };
     if (!target.text.trim()) throw new Error('这条回复经 SillyTavern 正则处理后没有可精修的正文。');
     if (target.text.length > MAX_SOURCE) throw new Error(`原回复超过 ${MAX_SOURCE} 字，请缩短后再试。`);
-    if (polishExample.length > MAX_EXAMPLE || polishNotes.length > MAX_POLISH_NOTES) {
-        throw new Error('文风示范或本次要求太长，请缩短后再试。');
-    }
+    if (polishExample.length > MAX_EXAMPLE) throw new Error(`文风示范超过 ${MAX_EXAMPLE.toLocaleString('zh-CN')} 字，请缩短后再试。`);
+    if (polishNotes.length > MAX_POLISH_NOTES) throw new Error('本次精修要求过长，请缩短后再试。');
 
     const sections = [];
     const prior = historyCount ? history.filter(message => message.index < target.index) : [];
@@ -65,7 +65,7 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     sections.push(`【待精修的回复 #${target.index + 1}】\n${JSON.stringify(target.text)}`);
 
     const content = sections.join('\n\n');
-    if (content.length > 32000) throw new Error('精修提示词过长，请缩短示范或减少参考消息。');
+    if (content.length > MAX_POLISH_MESSAGE) throw new Error('精修提示词过长，请缩短示范或减少参考消息。');
     return { target, prompt: [{ role: 'system', content: SYSTEM }, { role: 'user', content }] };
 }
 

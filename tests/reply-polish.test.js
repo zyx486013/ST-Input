@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getChatMessages } from '../prompts.js';
-import { migratePolishExample, parsePolishedReply, prepareReplyPolish, samePolishTarget, writePolishedReply } from '../reply-polish.js';
+import { MAX_EXAMPLE, migratePolishExample, parsePolishedReply, prepareReplyPolish, samePolishTarget, writePolishedReply } from '../reply-polish.js';
 
 const original = '原回复「你来了。」\n\n她把门拉开。';
 const revised = '精修稿「进来。」\n\n她把门拉开了一点。';
@@ -48,6 +48,18 @@ test('uses display-transformed text for the target and context, keeping the orig
     assert.throws(() => prepareReplyPolish(source), /正则处理后没有可精修的正文/);
 });
 
+test('includes long examples up to the limit verbatim alongside the full source reply', () => {
+    const suffix = '\n「示范结尾。」  ';
+    const polishExample = ' 夜'.repeat(Math.floor((MAX_EXAMPLE - suffix.length) / 2)).padEnd(MAX_EXAMPLE - suffix.length) + suffix;
+    const reply = '原'.repeat(8000);
+    const source = { history: getChatMessages([{ mes: reply }]), historyCount: 0, polishExample, polishNotes: '保留对白' };
+    const { prompt } = prepareReplyPolish(source);
+    assert.ok(prompt[1].content.length > 32000);
+    assert.ok(prompt[1].content.includes(`【文风示范】\n${JSON.stringify(polishExample)}\n\n`));
+    assert.ok(prompt[1].content.endsWith(JSON.stringify(reply)));
+    assert.throws(() => prepareReplyPolish({ ...source, polishExample: polishExample + '字' }), /文风示范超过 32,000 字/);
+});
+
 test('accepts plain prose and legacy envelopes without changing Markdown or whitespace', () => {
     const value = '\n  一行\n\n<text>🚪</text>  ';
     assert.equal(parsePolishedReply(value), value);
@@ -68,10 +80,11 @@ test('reports a real token cutoff separately from malformed legacy output and em
 });
 
 test('migrates the single saved example once and keeps existing named examples', () => {
-    const settings = { polishExample: '  旧示范\n\n对白。', other: true };
+    const legacyExample = '  旧示范\n\n对白。'.repeat(1100);
+    const settings = { polishExample: legacyExample, other: true };
     assert.equal(migratePolishExample(settings), true);
     assert.deepEqual(settings, {
-        polishExamples: [{ name: '原文风示范', text: '  旧示范\n\n对白。' }],
+        polishExamples: [{ name: '原文风示范', text: legacyExample }],
         polishExampleSelection: '原文风示范',
         other: true,
     });
