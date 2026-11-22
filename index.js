@@ -129,7 +129,13 @@ function mount() {
                             </div>
                         </details>
                     </div>
-                    <label>本次精修要求 <small>选填</small><textarea class="text_pole st-input-draft" rows="2" maxlength="${MAX_POLISH_NOTES}" data-st="polish-notes" placeholder="例如：缩短对白，用动作表现犹豫"></textarea></label>
+                    <div>
+                        <div class="st-input-actions">
+                            <label for="st-input-polish-notes">本次精修要求 <small>选填</small></label>
+                            <button type="button" class="menu_button" data-st="polish-diction" aria-pressed="false" title="分别参考范文对白和旁白的修饰疏密、动词和语气词" hidden>参考范文用词</button>
+                        </div>
+                        <textarea id="st-input-polish-notes" class="text_pole st-input-draft" rows="2" maxlength="${MAX_POLISH_NOTES}" data-st="polish-notes" placeholder="例如：缩短对白，用动作表现犹豫"></textarea>
+                    </div>
                     <div class="st-input-actions">
                         <button class="menu_button st-input-primary" type="button" data-st="polish-generate">开始精修</button>
                         <button class="menu_button" type="button" data-st="polish-undo" hidden>恢复原回复</button>
@@ -377,6 +383,7 @@ function mount() {
             const example = ui['polish-example'].value;
             source.polishExample = ui['with-example'].checked && example.trim() ? example : '';
             source.polishNotes = ui['polish-notes'].value.trim();
+            source.matchExampleDiction = config.matchExampleDiction;
         }
         return source;
     }
@@ -421,6 +428,8 @@ function mount() {
 
     function renderStyleMode() {
         ui['example-tools'].hidden = !ui['with-example'].checked;
+        ui['polish-diction'].hidden = !ui['with-example'].checked;
+        ui['polish-diction'].setAttribute('aria-pressed', String(Boolean(config.matchExampleDiction)));
         refreshPolishExamplePreview();
     }
 
@@ -907,6 +916,11 @@ function mount() {
         });
     }
     loadPolishExample(config.polishExampleSelection);
+    ui['polish-diction'].addEventListener('click', () => {
+        config.matchExampleDiction = !config.matchExampleDiction;
+        saveSettings();
+        renderStyleMode();
+    });
     renderStyleMode();
     renderWorkspace();
     ui['polish-examples'].addEventListener('change', () => {

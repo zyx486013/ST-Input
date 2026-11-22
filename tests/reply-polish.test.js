@@ -27,6 +27,16 @@ test('example and baseline use the same full target and only context preceding i
     assert.throws(() => prepareReplyPolish({ ...source, history: [{ index: 0, role: '模型', text: '原'.repeat(8001) }], polishExample }), /原回复超过/);
 });
 
+test('adds optional diction guidance only with an example and keeps the handwritten notes', () => {
+    const source = { history: getChatMessages([{ mes: original }]), historyCount: 0, polishNotes: '只改旁白' };
+    const prompt = (polishExample, matchExampleDiction) =>
+        prepareReplyPolish({ ...source, polishExample, matchExampleDiction }).prompt[1].content;
+    assert.equal(prompt('', true), prompt('', false));
+    assert.equal(prompt('范文', false), prompt('范文', undefined));
+    assert.doesNotMatch(prompt('范文', false), /【参考范文用词】/);
+    assert.match(prompt('范文', true), /【参考范文用词】[\s\S]+【本次精修要求】\n"只改旁白"/);
+});
+
 test('uses display-transformed text for the target and context, keeping the original for restoration', () => {
     const raw = '<hidden>' + '秘密'.repeat(4500) + '</hidden>**正文**';
     const history = getChatMessages([
