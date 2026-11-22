@@ -37,6 +37,23 @@ test('adds optional diction guidance only with an example and keeps the handwrit
     assert.match(prompt('范文', true), /【参考范文用词】[\s\S]+【本次精修要求】\n"只改旁白"/);
 });
 
+test('rewrites with or without an example and sends the same target and requirements as polishing', () => {
+    const source = { history: getChatMessages([{ mes: original }]), historyCount: 0, polishNotes: '只改对白' };
+    for (const polishExample of ['', '示范原文\n示范结尾']) {
+        const options = { ...source, polishExample, matchExampleDiction: true };
+        const polish = prepareReplyPolish(options);
+        const rewrite = prepareReplyPolish({ ...options, rewrite: true });
+        assert.match(polish.prompt[0].content, /按原稿自身的语气轻修/);
+        assert.match(rewrite.prompt[0].content, /本次采用重写方式/);
+        assert.doesNotMatch(rewrite.prompt[0].content, /只精修|完整精修正文|轻修|句段可以照录/);
+        assert.match(rewrite.prompt[0].content, /只输出完整重写正文/);
+        assert.equal(rewrite.prompt[0].content.includes('通读【文风示范】'), Boolean(polishExample));
+        assert.equal(rewrite.prompt[1].content.includes('【参考范文用词】'), Boolean(polishExample));
+        assert.equal(rewrite.prompt[1].content, polish.prompt[1].content.replace('【待精修的回复 #', '【待重写的回复 #'));
+        assert.deepEqual(rewrite.target, polish.target);
+    }
+});
+
 test('uses display-transformed text for the target and context, keeping the original for restoration', () => {
     const raw = '<hidden>' + '秘密'.repeat(4500) + '</hidden>**正文**';
     const history = getChatMessages([
