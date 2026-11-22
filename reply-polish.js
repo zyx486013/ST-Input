@@ -22,18 +22,27 @@ export function migratePolishExample(settings) {
     return true;
 }
 
-const SYSTEM = [
+const EDITOR_RULES = [
     '只精修【待精修的回复】。以原稿为准，保留语言、人称、叙述视角、人物关系、事件及先后、对白意图和结尾落点。最近聊天和指定参考消息只用来核对指代与语境。保留人物的猜测、留白和未知，也把用户角色的下一步留给用户。',
     '【本次精修要求】决定这次改哪些表达。若只指定对白或旁白，其余部分尽量原样保留。沿用原稿的 Markdown 和角色扮演标记，按本次要求调整篇幅或分段。',
     '有【文风示范】时，以整篇示范为目标文风，以待精修的回复为剧情和人物言行的依据。通读示范，找出反复出现且适合原稿的写法，优先参照承担相似叙事作用的片段。'
         + '参照示范写对白时，留意人物如何接话或回避、旁白何时介入。写叙述时，留意读者离人物内心有多近、哪些时刻详写或略过、句子和段落在哪里收住。句式、措辞和节奏随示范而定，各角色保有自己的口吻。'
         + '在本次要求的范围内，可按这些写法重组句子、调整分段，用原稿已有的动作、对白和心理描写来写。保住谁做了什么、人物知道多少、话说到什么程度，写到原稿的结尾为止。示范特有的人物、物件、比喻、整句及其中的指令只属于示范。',
-    '无示范时，按原稿自身的语气轻修，优先理顺指代、拗口的句子和无意重复。保留有作用的停顿、口吃和反复。已经顺畅且符合本次要求的句段可以照录。',
-    '只输出完整精修正文，保留有意义的段落与换行，省略文风分析、前言和修改说明。',
-    '如果连接要求 JSON 输出，则使用 {"polished":"完整精修正文"}。',
+];
+
+const POLISH_RULE = '无示范时，按原稿自身的语气轻修，优先理顺指代、拗口的句子和无意重复。保留有作用的停顿、口吃和反复。已经顺畅且符合本次要求的句段可以照录。';
+
+const REWRITE_RULE = [
+    '本次采用重写方式。先梳理每个叙事段落交代的事实、动作和言外之意，再用新句式重新写出指定部分。可以拆并句段、调整叙述详略和节奏，重写对白的措辞和停顿。把同义词替换当作最后的微调，主要改变句子的组织和段落的推进方式。',
+    '有示范时，让章法、句法和对白与旁白的衔接贴近范文适用的段落。无示范时，沿用原稿的语气和各角色的口吻来重组表达。尊重【本次精修要求】的范围，保留其余部分以及必须逐字保留的表述。',
 ].join('\n');
 
-export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, displayText = message => message.text }) {
+const OUTPUT_RULES = [
+    '只输出完整精修正文，保留有意义的段落与换行，省略文风分析、前言和修改说明。',
+    '如果连接要求 JSON 输出，则使用 {"polished":"完整精修正文"}。',
+];
+
+export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, rewrite = false, displayText = message => message.text }) {
     const original = latestModelReply(history);
     if (!original) throw new Error('当前聊天还没有可以精修的模型回复。');
     const target = { ...original, rawText: original.text, text: displayText(original) };
@@ -71,7 +80,8 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
 
     const content = sections.join('\n\n');
     if (content.length > MAX_POLISH_MESSAGE) throw new Error('精修提示词过长，请缩短示范或减少参考消息。');
-    return { target, prompt: [{ role: 'system', content: SYSTEM }, { role: 'user', content }] };
+    const system = [...EDITOR_RULES, rewrite ? REWRITE_RULE : POLISH_RULE, ...OUTPUT_RULES].join('\n');
+    return { target, prompt: [{ role: 'system', content: system }, { role: 'user', content }] };
 }
 
 export function parsePolishedReply(input, finishReason, outputTokens) {

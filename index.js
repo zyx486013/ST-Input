@@ -124,6 +124,11 @@ function mount() {
                     </details>
                 </section>
                 <section id="st-input-polish" class="st-input-config" data-workspace="polish" data-st="polish" hidden>
+                    <fieldset class="st-input-style-mode" data-st="polish-method">
+                        <legend>修改方式</legend>
+                        <label><input type="radio" name="st-input-polish-method" data-st="polish-light">精修</label>
+                        <label><input type="radio" name="st-input-polish-method" data-st="polish-rewrite" title="重新组织句子、对白和段落，保留原剧情">重写</label>
+                    </fieldset>
                     <fieldset class="st-input-style-mode">
                         <legend>文风示范</legend>
                         <label><input type="radio" name="st-input-use-example" data-st="without-example">无示范</label>
@@ -367,6 +372,7 @@ function mount() {
         for (const view of views) view.disabled = busy;
         ui.logic.disabled = busy;
         ui.review.disabled = busy;
+        ui['polish-method'].disabled = busy;
         ui['polish-generate'].disabled = busy || (ui['with-example'].checked && !ui['polish-example'].value.trim());
         ui['polish-undo'].disabled = busy;
         const apply = output().result.querySelector('[data-polish-apply]');
@@ -407,6 +413,7 @@ function mount() {
             source.polishExample = ui['with-example'].checked && example.trim() ? example : '';
             source.polishNotes = ui['polish-notes'].value.trim();
             source.matchExampleDiction = config.matchExampleDiction;
+            source.rewrite = config.polishRewrite === true;
         }
         return source;
     }
@@ -601,7 +608,7 @@ function mount() {
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
             if (polish) {
                 checkPolishSource(snapshot);
-                showPolishedVersion(snapshot, Boolean(source.polishExample), source.polishNotes, parsePolishedReply(result.text, result.finishReason, result.outputTokens));
+                showPolishedVersion(snapshot, source, parsePolishedReply(result.text, result.finishReason, result.outputTokens));
                 return;
             }
             if (target) {
@@ -632,39 +639,40 @@ function mount() {
         }
     }
 
-    function showPolishedVersion(target, withExample, notes, text) {
+    function showPolishedVersion(target, source, text) {
+        const { polishExample, polishNotes: notes, rewrite } = source;
         if (comparison?.target.message !== target.message || comparison.target.text !== target.text
             || comparison.target.rawText !== target.rawText || comparison.target.swipeId !== target.swipeId || comparison.notes !== notes) {
             comparison = { target, notes, versions: new Map() };
         }
-        comparison.versions.set(withExample, text);
-        renderPolishComparison(comparison, withExample);
-        setStatus('精修稿已生成。');
+        const versionName = `${polishExample ? '有示范' : '无示范'}${rewrite ? '重写稿' : '稿'}`;
+        comparison.versions.set(versionName, text);
+        renderPolishComparison(comparison, versionName);
+        setStatus(rewrite ? '重写稿已生成。' : '精修稿已生成。');
     }
 
-    function renderPolishComparison(result, withExample) {
+    function renderPolishComparison(result, versionName) {
         const { target, versions } = result;
         const stack = element('div', null, 'st-input-config');
         const controls = element('div', null, 'st-input-actions');
         const version = element('select', null, 'text_pole');
         version.setAttribute('aria-label', '对比稿件');
-        for (const [key, name] of [[true, '有示范稿'], [false, '无示范稿']]) {
-            if (versions.has(key)) version.append(new Option(name, String(key)));
-        }
-        version.value = String(withExample);
-        version.addEventListener('change', () => renderPolishComparison(result, version.value === 'true'));
         const baseline = element('select', null, 'text_pole');
         baseline.setAttribute('aria-label', '对照文本');
         baseline.append(new Option('对照原回复', 'original'));
-        if (versions.has(!withExample)) {
-            baseline.append(new Option(withExample ? '对照无示范稿' : '对照有示范稿', 'other'));
-        } else baseline.hidden = true;
+        for (const name of versions.keys()) {
+            version.append(new Option(name, name));
+            if (name !== versionName) baseline.append(new Option(`对照${name}`, name));
+        }
+        version.value = versionName;
+        version.addEventListener('change', () => renderPolishComparison(result, version.value));
+        baseline.hidden = versions.size < 2;
 
         const editor = element('textarea', null, 'text_pole st-input-draft');
         editor.setAttribute('aria-label', '编辑精修稿');
         editor.rows = 6;
         editor.maxLength = MAX_POLISHED_REPLY;
-        editor.value = versions.get(withExample);
+        editor.value = versions.get(versionName);
         editor.hidden = true;
         const edit = button('编辑精修稿', () => {
             editor.hidden = !editor.hidden;
@@ -685,14 +693,14 @@ function mount() {
         const revisedColumn = element('section');
         const originalTitle = element('strong');
         originalColumn.append(originalTitle, original);
-        revisedColumn.append(element('strong', '精修稿 · 下划线为新增'), revised);
+        revisedColumn.append(element('strong', `${versionName} · 下划线为新增`), revised);
         columns.append(originalColumn, revisedColumn);
 
         const actions = element('div', null, 'st-input-actions');
-        const apply = button('替换聊天回复', () => void changeReply(target, versions.get(withExample), target.rawText));
+        const apply = button('替换聊天回复', () => void changeReply(target, versions.get(versionName), target.rawText));
         const copy = button('复制精修稿', async () => {
             try {
-                await navigator.clipboard.writeText(versions.get(withExample));
+                await navigator.clipboard.writeText(versions.get(versionName));
                 setStatus('已复制精修稿。');
             } catch {
                 setStatus('无法访问剪贴板。可打开「编辑精修稿」手动复制。');
@@ -704,10 +712,9 @@ function mount() {
         if (differ) differ.Diff_Timeout = 0.06;
 
         function compare() {
-            const text = versions.get(withExample);
-            const otherVersion = baseline.value === 'other';
-            const before = otherVersion ? versions.get(!withExample) : target.text;
-            const beforeName = otherVersion ? (withExample ? '无示范稿' : '有示范稿') : '原回复';
+            const text = versions.get(versionName);
+            const before = versions.get(baseline.value) ?? target.text;
+            const beforeName = baseline.value === 'original' ? '原回复' : baseline.value;
             originalTitle.textContent = `${beforeName} · 删除线为删改`;
             original.setAttribute('aria-label', beforeName);
             original.replaceChildren();
@@ -735,12 +742,12 @@ function mount() {
             apply.dataset.polishApply = String(canApply);
             apply.disabled = !canApply || Boolean(pending) || writingReply;
             copy.disabled = !text.trim();
-            summary.textContent = text === before ? '两份文字相同。' : `${beforeName} ${[...before].length} 字 · 精修稿 ${[...text].length} 字`;
+            summary.textContent = text === before ? '两份文字相同。' : `${beforeName} ${[...before].length} 字 · ${versionName} ${[...text].length} 字`;
         }
 
         let frame;
         editor.addEventListener('input', () => {
-            versions.set(withExample, editor.value);
+            versions.set(versionName, editor.value);
             if (frame) cancelAnimationFrame(frame);
             frame = requestAnimationFrame(compare);
         });
@@ -1082,6 +1089,15 @@ function mount() {
         refreshPolishExamplePreview();
     });
     ui['polish-notes'].addEventListener('input', refreshPolishExamplePreview);
+    ui['polish-rewrite'].checked = config.polishRewrite === true;
+    ui['polish-light'].checked = !ui['polish-rewrite'].checked;
+    ui['polish-method'].addEventListener('change', () => {
+        config.polishRewrite = ui['polish-rewrite'].checked;
+        saveSettings();
+        ui['polish-generate'].textContent = config.polishRewrite ? '开始重写' : '开始精修';
+        refreshPolishExamplePreview();
+    });
+    if (ui['polish-rewrite'].checked) ui['polish-generate'].textContent = '开始重写';
     ui['polish-generate'].addEventListener('click', startPolish);
     ui['polish-undo'].addEventListener('click', () => {
         if (undoReply) void changeReply(undoReply.target, undoReply.target.rawText, undoReply.applied, true);
