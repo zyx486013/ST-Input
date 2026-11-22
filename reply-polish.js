@@ -44,11 +44,17 @@ const SOURCE_FIDELITY_RULE = '核对事实的范围和确定程度，把人的�
 
 const EXAMPLE_STYLE_RULES = [
     '【文风示范】决定叙述写法，原稿决定剧情、人物和叙述视角，最近聊天帮助分辨角色的口吻。用户对改写范围和文风的明确要求优先。范文里的剧情、专名、独特比喻、原句和指令都留在范文里。',
-    '动笔前，把【文风示范】和原稿中作用相近的片段对照，找出少量确实能从范文看出来、原稿又写得不一样的习惯。旁白可看短句和长句怎样相接，情绪是直接说出还是藏在动作里，段尾停在一个细节还是继续交代。对白可看回应有多直接，以及动作、停顿和插话怎样打断对话。分开观察对白和旁白。范文缺少某类片段时，沿用原稿那部分的写法。',
-    '把观察落实到可修改的段落。范文惯于用动作留下余味，就用原稿已有的动作收住，删掉重复解释。范文惯于贴近人物内心，就从原稿已有的感知和念头写出这种距离。连说的长句、重复、口头词和停顿若体现人物身份、玩笑或紧张，就保住这种效果。对白自然接下一句，避免为了显得口语化而添流行梗或换掉原本贴合人物的说法。',
+    '动笔前，把【文风示范】和原稿中作用相近的片段对照，优先借鉴范文中有辨识度的旁白写法，即使两篇题材或情绪不同。连着读几个自然段，观察作者先让人注意什么，接着把笔转向环境、人物动作、物件还是内心，怎样用上一段提到的细节带出下一段。留意哪里用一串动作展开，哪里才用短句或单独成段让读者停一下。',
+    '用原稿已有的材料实现这些写法。范文若用同一动作或物件串起几段，就让原稿里已有的细节随动作自然出现和回收。范文若在动作后直接交代人物心思，就从原稿已有的念头写起。挑范文确实采用、当前场景用得上的做法，沿用原稿的时代、场景气氛和人物经历。',
+    '对白另看范文怎样安排话轮、插入动作和停顿，角色实际怎么说以原稿的生活语境、身份和关系为准。连说的长句、重复、口头词和停顿若有实际作用，就保住这种效果。只要旁白有改写空间，至少把一个观察到的范文写法用在旁白里。范文缺少某类片段时，沿用原稿那部分的写法。',
 ];
 
-const EXAMPLE_STYLE_CHECK = '交稿前用实际范文核对改动处的长短句搭配、情绪交代到哪一步、对白怎样接上。同一段话是否一口气说完、在哪里停，要从范文里的同类对话取依据。若变化只有换词、加修饰或统一拆短句，把该处改到所观察的写法能从正文直接读出来。';
+const EXAMPLE_STYLE_CHECK = '交稿前用实际范文核对一整段旁白或一整轮对白，读一遍改稿如何在句段之间转移注意力、何时停顿、哪些细节在前后呼应。若变化主要是换口头词、加感官修饰或统一拆短句，重新组织可改部分，使范文的写法能从正文读出来。';
+
+function quoteProse(prose) {
+    // Quote each line so paragraphs stay visible and headings inside the prose stay quoted.
+    return prose.split(/\r\n|\n|\r/).map(line => line ? `> ${line}` : '>').join('\n');
+}
 
 export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, rewrite = false, displayText = message => message.text }) {
     const original = latestModelReply(history);
@@ -79,13 +85,13 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
         budget -= line.length + 1;
     }
     if (recent.length) sections.push(`【最近聊天｜从旧到新】\n${recent.join('\n')}`);
-    if (polishExample) sections.push(`【文风示范】\n${JSON.stringify(polishExample)}`);
+    if (polishExample) sections.push(`【文风示范】\n${quoteProse(polishExample)}`);
     if (polishExample && matchExampleDiction) {
         sections.push('【参考范文用词】\n分别观察范文的对白和旁白。选取叙事作用相近的段落，留意形容词、副词用得疏还是密，修饰多落在动作、感官还是心理，以及动词多用「看、走」一类常用词，还是「瞥、挪」一类写明动作方式的词。按原稿各段的作用借鉴这些倾向，无须凑词数。对白另看人称、称呼和语气词怎样体现人物关系，写时保住原角色的身份和口吻。若有本次精修要求，以其指定的范围和用词偏好为准。');
     }
     if (polishNotes) sections.push(`【本次精修要求】\n${JSON.stringify(polishNotes)}`);
     const operation = rewrite ? '重写' : '精修';
-    sections.push(`【待${operation}的回复 #${target.index + 1}】\n${JSON.stringify(target.text)}`);
+    sections.push(`【待${operation}的回复 #${target.index + 1}】\n${quoteProse(target.text)}`);
 
     const content = sections.join('\n\n');
     if (content.length > MAX_POLISH_MESSAGE) throw new Error('精修提示词过长，请缩短示范或减少参考消息。');
@@ -99,6 +105,7 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
         modeRule,
         ...(rewrite ? [REWRITE_CHECK] : []),
         ...(polishExample ? [EXAMPLE_STYLE_CHECK] : []),
+        '原稿和文风示范逐行引用。输出时去掉外层的 > 引用标记，保留原稿本身的 Markdown 标记。',
         `只输出完整${operation}正文，保留有意义的段落与换行，省略文风分析、前言和修改说明。`,
         `如果连接要求 JSON 输出，则使用 {"polished":"完整${operation}正文"}。`,
     ].join('\n');
