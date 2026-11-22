@@ -30,9 +30,11 @@ const SYSTEM = [
     '如果连接要求 JSON 输出，则使用 {"polished":"完整精修正文"}。',
 ].join('\n');
 
-export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes }) {
-    const target = latestModelReply(history);
-    if (!target) throw new Error('当前聊天还没有可以精修的模型回复。');
+export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, displayText = message => message.text }) {
+    const original = latestModelReply(history);
+    if (!original) throw new Error('当前聊天还没有可以精修的模型回复。');
+    const target = { ...original, rawText: original.text, text: displayText(original) };
+    if (!target.text.trim()) throw new Error('这条回复经 SillyTavern 正则处理后没有可精修的正文。');
     if (target.text.length > MAX_SOURCE) throw new Error(`原回复超过 ${MAX_SOURCE} 字，请缩短后再试。`);
     if (polishExample.length > MAX_EXAMPLE || polishNotes.length > MAX_POLISH_NOTES) {
         throw new Error('文风示范或本次要求太长，请缩短后再试。');
@@ -41,14 +43,19 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     const sections = [];
     const prior = historyCount ? history.filter(message => message.index < target.index) : [];
     const reference = prior.find(message => message.index === pinned);
-    if (reference) sections.push(`【指定参考消息】\n${serializeMessage(reference, 1600)}`);
+    if (reference) {
+        const text = displayText(reference);
+        if (text.trim()) sections.push(`【指定参考消息】\n${serializeMessage({ ...reference, text }, 1600)}`);
+    }
 
     const recent = [];
     let budget = 5500;
     for (const message of prior.slice(-historyCount).reverse()) {
         if (message === reference) continue;
         if (budget < 150) break;
-        const line = serializeMessage(message, Math.min(1800, budget - 1));
+        const text = displayText(message);
+        if (!text.trim()) continue;
+        const line = serializeMessage({ ...message, text }, Math.min(1800, budget - 1));
         recent.unshift(line);
         budget -= line.length + 1;
     }
@@ -86,7 +93,7 @@ export function parsePolishedReply(input, finishReason, outputTokens) {
     return text;
 }
 
-export function samePolishTarget(st, target, expectedText = target.text) {
+export function samePolishTarget(st, target, expectedText = target.rawText) {
     if (st.getCurrentChatId() !== target.chatId || st.chat.length !== target.chatLength || st.chat[target.index] !== target.message
         || target.message.swipe_id !== target.swipeId || target.message.mes !== expectedText) return false;
     return latestModelReply(getChatMessages(st.chat))?.index === target.index;
@@ -94,7 +101,7 @@ export function samePolishTarget(st, target, expectedText = target.text) {
 
 export async function writePolishedReply(st, target, text, expectedText, getContext) {
     if (!samePolishTarget(st, target, expectedText)) throw new Error('模型回复或版本已变化，请重新打开精修。');
-    if (!text.trim() || text.length > MAX_POLISHED_REPLY) throw new Error('请输入有效的精修正文。');
+    if (!text.trim() || (text !== target.rawText && text.length > MAX_POLISHED_REPLY)) throw new Error('请输入有效的精修正文。');
 
     const { message, index, swipeId } = target;
     message.mes = text;
