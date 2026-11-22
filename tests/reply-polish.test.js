@@ -16,7 +16,8 @@ test('example and baseline use the same full target and only context preceding i
     const withExample = prepareReplyPolish({ ...source, polishExample });
     const baseline = prepareReplyPolish({ ...source, polishExample: '' });
     assert.equal(withExample.target.index, 1);
-    assert.equal(withExample.prompt[0].content, baseline.prompt[0].content);
+    assert.match(withExample.prompt[0].content, /与范文写法相差明显的句群/);
+    assert.match(baseline.prompt[0].content, /按原稿自身的语气轻修/);
     assert.equal(withExample.prompt[1].content.replace(`【文风示范】\n${JSON.stringify(polishExample)}\n\n`, ''), baseline.prompt[1].content);
     assert.match(baseline.prompt[1].content, /前文/);
     assert.doesNotMatch(baseline.prompt[1].content, /还没有答复的问题/);
@@ -43,11 +44,14 @@ test('rewrites with or without an example and sends the same target and requirem
         const options = { ...source, polishExample, matchExampleDiction: true };
         const polish = prepareReplyPolish(options);
         const rewrite = prepareReplyPolish({ ...options, rewrite: true });
-        assert.match(polish.prompt[0].content, /按原稿自身的语气轻修/);
+        assert.equal(polish.prompt[0].content.includes('按原稿自身的语气轻修'), !polishExample);
         assert.match(rewrite.prompt[0].content, /本次采用重写方式/);
         assert.doesNotMatch(rewrite.prompt[0].content, /只精修|完整精修正文|轻修|句段可以照录/);
         assert.match(rewrite.prompt[0].content, /只输出完整重写正文/);
-        assert.equal(rewrite.prompt[0].content.includes('通读【文风示范】'), Boolean(polishExample));
+        for (const revision of [polish, rewrite]) {
+            assert.equal(revision.prompt[0].content.includes('把【文风示范】和原稿中作用相近的片段对照'), Boolean(polishExample));
+            assert.equal(revision.prompt[0].content.includes('用实际范文核对'), Boolean(polishExample));
+        }
         assert.equal(rewrite.prompt[1].content.includes('【参考范文用词】'), Boolean(polishExample));
         assert.equal(rewrite.prompt[1].content, polish.prompt[1].content.replace('【待精修的回复 #', '【待重写的回复 #'));
         assert.deepEqual(rewrite.target, polish.target);
