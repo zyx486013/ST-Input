@@ -33,7 +33,7 @@ const SYSTEM = [
     '如果连接要求 JSON 输出，则使用 {"polished":"完整精修正文"}。',
 ].join('\n');
 
-export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, displayText = message => message.text }) {
+export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, displayText = message => message.text }) {
     const original = latestModelReply(history);
     if (!original) throw new Error('当前聊天还没有可以精修的模型回复。');
     const target = { ...original, rawText: original.text, text: displayText(original) };
@@ -63,6 +63,9 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     }
     if (recent.length) sections.push(`【最近聊天｜从旧到新】\n${recent.join('\n')}`);
     if (polishExample) sections.push(`【文风示范】\n${JSON.stringify(polishExample)}`);
+    if (polishExample && matchExampleDiction) {
+        sections.push('【参考范文用词】\n分别观察范文的对白和旁白。选取叙事作用相近的段落，留意形容词、副词用得疏还是密，修饰多落在动作、感官还是心理，以及动词多用「看、走」一类常用词，还是「瞥、挪」一类写明动作方式的词。按原稿各段的作用借鉴这些倾向，无须凑词数。对白另看人称、称呼和语气词怎样体现人物关系，写时保住原角色的身份和口吻。若有本次精修要求，以其指定的范围和用词偏好为准。');
+    }
     if (polishNotes) sections.push(`【本次精修要求】\n${JSON.stringify(polishNotes)}`);
     sections.push(`【待精修的回复 #${target.index + 1}】\n${JSON.stringify(target.text)}`);
 

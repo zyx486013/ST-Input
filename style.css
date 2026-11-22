@@ -317,6 +317,15 @@
 
 #st-input-panel .st-input-style-mode input { margin: 0; }
 
+#st-input-panel [data-st="polish-diction"][aria-pressed="true"] {
+    border-color: currentColor;
+    font-weight: 700;
+}
+
+#st-input-panel [data-st="polish-diction"][aria-pressed="true"]::before {
+    content: '✓ ';
+}
+
 #st-input-panel .st-input-example-tools {
     display: grid;
     gap: 0.4rem;
