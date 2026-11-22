@@ -1,7 +1,8 @@
+import { appendGuidance, GUIDANCE_KEY, readGuidance, saveGuide } from './writing-guidance.js';
 import { getRegexedString, regex_placement } from '/scripts/extensions/regex/engine.js';
 import { completeWithSillyTavern } from './connections.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
-import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult } from './prompts.js';
+import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
 import { MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
 import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISHED_REPLY, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
 
@@ -106,7 +107,21 @@ function mount() {
                     <div class="st-input-actions" data-st="actions"></div>
                 </section>
                 <section data-workspace="logic" hidden>
-                    <button class="menu_button st-input-primary" type="button" data-st="logic">检查回复逻辑</button>
+                    <div class="st-input-actions">
+                        <button class="menu_button st-input-primary" type="button" data-st="logic">检查回复逻辑</button>
+                        <button class="menu_button" type="button" data-st="review">${REVIEW_LABEL}</button>
+                    </div>
+                    <details data-st="guidance" hidden>
+                        <summary data-st="guidance-title">写作指导</summary>
+                        <div class="st-input-config">
+                            <div data-st="guidance-list"></div>
+                            <label><input type="checkbox" data-st="guidance-enabled"> 整理和追问时附到建议草稿</label>
+                            <div class="st-input-actions">
+                                <button class="menu_button" type="button" data-st="insert-guides">把指导加入输入框</button>
+                                <button class="menu_button" type="button" data-st="insert-issues">指出问题并加入指导</button>
+                            </div>
+                        </div>
+                    </details>
                 </section>
                 <section id="st-input-polish" class="st-input-config" data-workspace="polish" data-st="polish" hidden>
                     <fieldset class="st-input-style-mode">
@@ -206,6 +221,7 @@ function mount() {
 
     let pending;
     let checking = false;
+    let savingGuidance = false;
     let revision = 0;
     let undoDraft;
     let undoReply;
@@ -243,7 +259,7 @@ function mount() {
     });
     undo.hidden = true;
 
-    for (const [mode, label] of Object.entries({ ...MODES, [LOGIC_MODE]: LOGIC_LABEL, [POLISH_MODE]: POLISH_LABEL })) {
+    for (const [mode, label] of Object.entries({ ...MODES, [LOGIC_MODE]: LOGIC_LABEL, [REVIEW_MODE]: REVIEW_LABEL, [POLISH_MODE]: POLISH_LABEL })) {
         if (mode in MODES) {
             const action = button(label, () => start(mode));
             action.dataset.mode = mode;
@@ -255,6 +271,7 @@ function mount() {
     cancel.hidden = true;
     ui['request-actions'].append(cancel, undo);
     ui.logic.addEventListener('click', () => start(LOGIC_MODE));
+    ui.review.addEventListener('click', () => start(REVIEW_MODE));
     for (const view of views) {
         view.addEventListener('click', () => {
             config.workspace = view.dataset.view;
@@ -292,6 +309,7 @@ function mount() {
         launch.setAttribute('aria-expanded', String(open));
         if (open) {
             refreshReferences();
+            renderGuidance();
             refreshProfiles();
             renderConnection();
             if (config.connection === 'custom' && !customConfig) loadCustom();
@@ -348,6 +366,7 @@ function mount() {
         for (const action of ui.actions.querySelectorAll('[data-mode]')) action.disabled = busy;
         for (const view of views) view.disabled = busy;
         ui.logic.disabled = busy;
+        ui.review.disabled = busy;
         ui['polish-generate'].disabled = busy || (ui['with-example'].checked && !ui['polish-example'].value.trim());
         ui['polish-undo'].disabled = busy;
         const apply = output().result.querySelector('[data-polish-apply]');
@@ -375,9 +394,13 @@ function mount() {
 
     function getSource(mode) {
         const st = context();
-        const history = config.history || mode === LOGIC_MODE || mode === POLISH_MODE ? getChatMessages(st.chat) : [];
+        const history = config.history || mode === LOGIC_MODE || mode === POLISH_MODE || mode === REVIEW_MODE ? getChatMessages(st.chat) : [];
         const pinned = config.history && ui.reference.value ? Number(ui.reference.value) : undefined;
         const source = { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
+        if (mode in MODES) {
+            const guidance = readGuidance(st.chatMetadata);
+            source.guidance = guidance.enabled ? guidance.items : [];
+        }
         if (mode === POLISH_MODE) {
             source.displayText = message => getPolishDisplayText(st, message);
             const example = ui['polish-example'].value;
@@ -391,7 +414,9 @@ function mount() {
     function buildRequest(source, answers, final) {
         if (source.mode === LOGIC_MODE) return prepareLogicCheck(source);
         if (source.mode === POLISH_MODE) return prepareReplyPolish(source);
-        return { prompt: buildPrompt({ ...source, answers, final }) };
+        const prompt = buildPrompt({ ...source, answers, final });
+        const target = source.mode === REVIEW_MODE ? latestModelReply(source.history) : null;
+        return { prompt, target };
     }
 
     function showPrompt(prompt) {
@@ -581,6 +606,10 @@ function mount() {
             }
             if (target) {
                 setStatus('');
+                if (source.mode === REVIEW_MODE) {
+                    if (!reviewTargetChanged(target)) renderReview(parseResult(result, REVIEW_MODE, false, target.text).review, target);
+                    return;
+                }
                 if (logicTargetChanged(target)) return;
                 renderLogicFindings(parseLogicFindings(result, request), target);
                 return;
@@ -753,6 +782,13 @@ function mount() {
         return true;
     }
 
+    function reviewTargetChanged(target) {
+        const latest = latestModelReply(getChatMessages(context().chat));
+        if (latest?.index === target.index && latest.text === target.text) return false;
+        setStatus('最新回复已变化，请重新分析。');
+        return true;
+    }
+
     function renderLogicFindings(findings, target) {
         if (!findings.length) {
             output().result.replaceChildren(element('p', '这次检查未发现可定位的逻辑问题。'));
@@ -791,7 +827,7 @@ function mount() {
     function renderDraft(value, source) {
         const label = element('label', '建议草稿');
         const edited = element('textarea', null, 'text_pole st-input-draft');
-        edited.value = value;
+        edited.value = appendGuidance(value, source.guidance);
         edited.maxLength = MAX_DRAFT;
         edited.rows = 4;
         label.append(edited);
@@ -851,6 +887,93 @@ function mount() {
             void run(source, answers, true);
         }));
         output().result.replaceChildren(stack);
+    }
+
+    function renderReview(review, target) {
+        if (!review.length) {
+            outputs.get(LOGIC_MODE).result.replaceChildren(element('p', '这次分析未发现明确影响阅读的问题。'));
+            return;
+        }
+        const list = element('div', null, 'st-input-config');
+        for (const item of review) {
+            const group = element('fieldset', null, 'st-input-question');
+            const quote = element('blockquote', item.evidence, 'st-input-logic-evidence');
+            const save = button('保存指导', () => {
+                if (reviewTargetChanged(target)) return;
+                void updateGuidance(state => saveGuide(state, item), '已保存到当前聊天的写作指导。');
+                ui.guidance.open = true;
+            });
+            save.dataset.guide = item.guidance;
+            group.append(element('legend', item.category), quote, element('p', item.issue),
+                element('p', item.guidance, 'st-input-guidance-text'), save);
+            list.append(group);
+        }
+        outputs.get(LOGIC_MODE).result.replaceChildren(list);
+        renderGuidance();
+    }
+
+    function renderGuidance() {
+        const { enabled, items } = readGuidance(context().chatMetadata);
+        ui.guidance.hidden = !items.length;
+        ui['guidance-enabled'].checked = enabled;
+        ui['guidance-enabled'].disabled = savingGuidance;
+        ui['guidance-title'].textContent = `写作指导（${items.length}）`;
+        const rows = items.map(item => {
+            const row = element('div', null, 'st-input-guide');
+            const remove = button('移除', () => {
+                void updateGuidance(state => ({
+                    ...state, items: state.items.filter(value => value.guidance !== item.guidance),
+                }), '已移除这条指导。');
+            });
+            remove.disabled = savingGuidance;
+            remove.setAttribute('aria-label', `移除指导：${item.guidance}`);
+            row.append(element('p', item.guidance, 'st-input-guidance-text'), element('p', `${item.category} · ${item.issue}`), remove);
+            return row;
+        });
+        ui['guidance-list'].replaceChildren(...rows);
+        for (const save of outputs.get(LOGIC_MODE).result.querySelectorAll('[data-guide]')) {
+            const saved = items.some(item => item.guidance === save.dataset.guide);
+            save.disabled = saved || savingGuidance;
+            save.textContent = saved ? '已保存' : '保存指导';
+        }
+    }
+
+    async function updateGuidance(update, message = '') {
+        if (savingGuidance) return;
+        const st = context();
+        const metadata = st.chatMetadata;
+        if (!st.getCurrentChatId() || !metadata) {
+            setStatus('请先打开一条聊天，再保存写作指导。');
+            return;
+        }
+        const previous = metadata[GUIDANCE_KEY];
+        try {
+            const next = update(readGuidance(metadata));
+            savingGuidance = true;
+            metadata[GUIDANCE_KEY] = next;
+            renderGuidance();
+            await st.saveMetadata();
+            if (context().chatMetadata === metadata && message) setStatus(message);
+        } catch (error) {
+            if (context().chatMetadata === metadata) {
+                if (previous === undefined) delete metadata[GUIDANCE_KEY];
+                else metadata[GUIDANCE_KEY] = previous;
+                setStatus(error.message);
+            }
+        } finally {
+            savingGuidance = false;
+            renderGuidance();
+        }
+    }
+
+    function insertGuidance(includeIssues) {
+        const draft = appendGuidance(textarea.value, readGuidance(context().chatMetadata).items, includeIssues);
+        if (draft === textarea.value) {
+            setStatus('当前草稿已包含这些指导。');
+            return;
+        }
+        replaceDraft(draft);
+        setStatus('已加入输入框，可编辑或恢复原稿。');
     }
 
     function customForm() {
@@ -991,6 +1114,12 @@ function mount() {
         if (!panel.hidden && !pending && !output().result.childElementCount) refreshPreview();
     });
 
+    ui['guidance-enabled'].addEventListener('change', () => {
+        void updateGuidance(state => ({ ...state, enabled: ui['guidance-enabled'].checked }));
+    });
+    ui['insert-guides'].addEventListener('click', () => insertGuidance(false));
+    ui['insert-issues'].addEventListener('click', () => insertGuidance(true));
+
     ui.connection.value = config.connection;
     ui.connection.addEventListener('change', () => {
         config.connection = ui.connection.value;
@@ -1043,6 +1172,8 @@ function mount() {
         undo.hidden = true;
         ui['polish-undo'].hidden = true;
         ui['polish-notes'].value = '';
+        ui.guidance.open = false;
+        renderGuidance();
         ui.reference.value = '';
         if (!panel.hidden) refreshReferences();
         clearRequest();
