@@ -40,7 +40,7 @@ test('adds optional diction guidance only with an example and keeps the handwrit
     assert.match(prompt('范文', true), /【参考范文用词】[\s\S]+【本次精修要求】\n"只改旁白"/);
 });
 
-test('rewrites with or without an example and sends the same target and requirements as polishing', () => {
+test('uses the old draft as scene reference when no chat context was selected', () => {
     const source = { history: getChatMessages([{ mes: original }]), historyCount: 0, polishNotes: '只改对白' };
     for (const polishExample of ['', '示范原文\n示范结尾']) {
         const options = { ...source, polishExample, matchExampleDiction: true };
@@ -50,19 +50,40 @@ test('rewrites with or without an example and sends the same target and requirem
         assert.match(rewrite.prompt[0].content, /本次采用重写方式/);
         assert.doesNotMatch(rewrite.prompt[0].content, /只精修|完整精修正文|轻修|句段可以照录/);
         assert.match(rewrite.prompt[0].content, /只输出完整重写正文/);
-        assert.match(rewrite.prompt[0].content, /以整段叙述或整轮对白为单位/);
-        for (const revision of [polish, rewrite]) {
-            assert.equal(revision.prompt[0].content.includes('把【文风示范】和原稿中作用相近的片段对照'), Boolean(polishExample));
-            assert.equal(revision.prompt[0].content.includes('用实际范文核对'), Boolean(polishExample));
-            assert.equal(revision.prompt[0].content.includes('连说的长句、重复、口头词和停顿'), Boolean(polishExample));
-            assert.equal(revision.prompt[0].content.includes('怎样用上一段提到的细节带出下一段'), Boolean(polishExample));
-            assert.match(revision.prompt[0].content, /核对事实的范围和确定程度/);
-            assert.match(revision.prompt[0].content, /独立标题就原样保留一次/);
-        }
+        assert.match(rewrite.prompt[0].content, /为同一轮独立写一份全新的回复/);
+        assert.match(rewrite.prompt[0].content, /用户若限定范围或要求保留指定原句/);
+        assert.equal(rewrite.prompt[0].content.includes('从【文风示范】相邻的自然段观察'), Boolean(polishExample));
+        assert.equal(polish.prompt[0].content.includes('怎样用上一段提到的细节带出下一段'), Boolean(polishExample));
+        assert.match(polish.prompt[0].content, /留在它们原本出现的场景/);
+        assert.doesNotMatch(rewrite.prompt[0].content, /留在它们原本出现的场景/);
         assert.equal(rewrite.prompt[1].content.includes('【参考范文用词】'), Boolean(polishExample));
-        assert.equal(rewrite.prompt[1].content, polish.prompt[1].content.replace('【待精修的回复 #', '【待重写的回复 #'));
+        assert.match(rewrite.prompt[1].content, /【参考原稿】\n> 原回复/);
+        assert.match(rewrite.prompt[1].content, /【本次精修要求】\n"只改对白"/);
+        assert.doesNotMatch(rewrite.prompt[1].content, /【本轮用户输入】/);
         assert.deepEqual(rewrite.target, polish.target);
     }
+});
+
+test('writes a fresh reply from the latest preceding user message and includes the old draft on request', () => {
+    const history = getChatMessages([
+        { mes: '上一轮的任务', is_user: true }, { mes: '已建立的前文' },
+        { mes: '续写这一轮\n保留对白口吻', is_user: true }, { mes: original },
+        { mes: '后续尚未答复的任务', is_user: true },
+    ]);
+    const source = { history, historyCount: 3, pinned: 2, polishExample: '范文', polishNotes: '', rewrite: true };
+    const { target, prompt } = prepareReplyPolish(source);
+    assert.equal(target.text, original);
+    assert.match(prompt[1].content, /已建立的前文/);
+    assert.match(prompt[1].content, /【本轮用户输入】\n> 续写这一轮\n> 保留对白口吻/);
+    assert.equal(prompt[1].content.split('续写这一轮').length, 2);
+    assert.doesNotMatch(prompt[1].content, /后续尚未答复的任务|【参考原稿】|原回复/);
+    assert.doesNotMatch(prompt[0].content, /【参考原稿】/);
+    const withDraft = prepareReplyPolish({ ...source, referenceDraft: true });
+    assert.match(withDraft.prompt[1].content, /【参考原稿】\n> 原回复/);
+    assert.match(withDraft.prompt[1].content, /【本轮用户输入】\n> 续写这一轮/);
+    const contextDisabled = prepareReplyPolish({ ...source, historyCount: 0 });
+    assert.doesNotMatch(contextDisabled.prompt[1].content, /续写这一轮|已建立的前文/);
+    assert.match(contextDisabled.prompt[1].content, /【参考原稿】\n> 原回复/);
 });
 
 test('uses display-transformed text for the target and context, keeping the original for restoration', () => {

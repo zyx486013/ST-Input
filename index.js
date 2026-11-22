@@ -127,7 +127,8 @@ function mount() {
                     <fieldset class="st-input-style-mode" data-st="polish-method">
                         <legend>修改方式</legend>
                         <label><input type="radio" name="st-input-polish-method" data-st="polish-light">精修</label>
-                        <label><input type="radio" name="st-input-polish-method" data-st="polish-rewrite" title="重新组织句子、对白和段落，保留原剧情">重写</label>
+                        <label title="按本轮用户输入重新写一份回复"><input type="radio" name="st-input-polish-method" data-st="polish-rewrite">重写</label>
+                        <label data-st="rewrite-reference-field" title="需要沿用原稿的情节或只重写指定部分时勾选。没有本轮用户输入时自动使用原稿作为线索。" hidden><input type="checkbox" data-st="rewrite-reference">参考原稿</label>
                     </fieldset>
                     <fieldset class="st-input-style-mode">
                         <legend>文风示范</legend>
@@ -414,6 +415,7 @@ function mount() {
             source.polishNotes = ui['polish-notes'].value.trim();
             source.matchExampleDiction = config.matchExampleDiction;
             source.rewrite = config.polishRewrite === true;
+            source.referenceDraft = ui['rewrite-reference'].checked;
         }
         return source;
     }
@@ -1091,12 +1093,16 @@ function mount() {
     ui['polish-notes'].addEventListener('input', refreshPolishExamplePreview);
     ui['polish-rewrite'].checked = config.polishRewrite === true;
     ui['polish-light'].checked = !ui['polish-rewrite'].checked;
-    ui['polish-method'].addEventListener('change', () => {
-        config.polishRewrite = ui['polish-rewrite'].checked;
+    ui['rewrite-reference-field'].hidden = !ui['polish-rewrite'].checked;
+    for (const radio of [ui['polish-light'], ui['polish-rewrite']]) radio.addEventListener('change', () => {
+        const rewrite = ui['polish-rewrite'].checked;
+        config.polishRewrite = rewrite;
         saveSettings();
-        ui['polish-generate'].textContent = config.polishRewrite ? '开始重写' : '开始精修';
+        ui['rewrite-reference-field'].hidden = !rewrite;
+        ui['polish-generate'].textContent = rewrite ? '开始重写' : '开始精修';
         refreshPolishExamplePreview();
     });
+    ui['rewrite-reference'].addEventListener('change', refreshPolishExamplePreview);
     if (ui['polish-rewrite'].checked) ui['polish-generate'].textContent = '开始重写';
     ui['polish-generate'].addEventListener('click', startPolish);
     ui['polish-undo'].addEventListener('click', () => {
