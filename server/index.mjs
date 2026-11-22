@@ -3,6 +3,7 @@ import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { callUpstream, normalizeApiUrl, RequestError, resolveApiHost } from './upstream.mjs';
+import { isPolishTokenLimit, MAX_POLISH_MESSAGE, MAX_STANDARD_MESSAGE, validatePolishParameters } from './polish-parameters.mjs';
 
 export const info = {
     id: 'st-input',
@@ -30,7 +31,7 @@ async function saveConfig(file, config) {
 }
 
 function publicConfig({ baseUrl = '', model = '', key = '' }) {
-    return { baseUrl, model, hasKey: Boolean(key) };
+    return { baseUrl, model, hasKey: Boolean(key), polishParameters: true, maxPolishMessage: MAX_POLISH_MESSAGE };
 }
 
 function readCandidate(input, saved, needsModel = true) {
@@ -49,8 +50,10 @@ function readCandidate(input, saved, needsModel = true) {
 
 function readMessages(input) {
     const messages = input?.messages;
+    const maxUserLength = input?.withDetails === true ? MAX_POLISH_MESSAGE : MAX_STANDARD_MESSAGE;
     if (!Array.isArray(messages) || messages.length !== 2 || messages[0]?.role !== 'system' || messages[1]?.role !== 'user'
-        || messages.some(message => typeof message.content !== 'string' || !message.content.trim() || message.content.length > 32000)) {
+        || messages.some((message, index) => typeof message.content !== 'string' || !message.content.trim()
+            || message.content.length > (index === 1 ? maxUserLength : MAX_STANDARD_MESSAGE))) {
         throw new RequestError(400, '输入助手的请求内容有误或过长。');
     }
     return messages.map(({ role, content }) => ({ role, content }));
@@ -104,6 +107,18 @@ export async function init(router) {
         const config = await readConfig(file);
         if (!config.baseUrl || !config.model) throw new RequestError(400, '请先保存自定义 API 地址和模型。');
         const messages = readMessages(input);
+        if (input.withDetails === true) {
+            const { outputTokens, parameters = {} } = input;
+            if (outputTokens !== undefined && !isPolishTokenLimit(outputTokens)) {
+                throw new RequestError(400, '精修输出上限须为 1 到 65536 的整数。');
+            }
+            try {
+                validatePolishParameters(parameters);
+            } catch (error) {
+                throw new RequestError(400, error.message);
+            }
+            return callUpstream(config, 'generate', { messages, disconnect, withDetails: true, outputTokens, parameters });
+        }
         return { text: await callUpstream(config, 'generate', { messages, disconnect }) };
     }));
 }

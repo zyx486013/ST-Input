@@ -145,7 +145,7 @@ async function requestJson(url, { key, data, signal }) {
     });
 }
 
-export async function callUpstream(config, route, { messages, disconnect } = {}) {
+export async function callUpstream(config, route, { messages, disconnect, withDetails = false, outputTokens, parameters } = {}) {
     const models = route === 'models';
     const url = new URL(`${config.baseUrl}/${models ? 'models' : 'chat/completions'}`);
     const timeout = AbortSignal.timeout(models ? 12000 : 60000);
@@ -155,9 +155,11 @@ export async function callUpstream(config, route, { messages, disconnect } = {})
             key: config.key,
             signal,
             data: models ? undefined : {
+                ...parameters,
                 model: config.model,
                 messages,
                 stream: false,
+                max_tokens: outputTokens,
             },
         });
         if (models) {
@@ -165,12 +167,14 @@ export async function callUpstream(config, route, { messages, disconnect } = {})
             return [...new Set(data.data.map(item => item?.id).filter(id => typeof id === 'string' && id.trim() && id.length <= 240))]
                 .slice(0, 1000).sort();
         }
-        const content = data?.choices?.[0]?.message?.content;
+        const choice = data?.choices?.[0];
+        const content = choice?.message?.content;
         const text = typeof content === 'string' ? content : Array.isArray(content)
             ? content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join('')
             : '';
-        if (!text.trim()) throw new RequestError(502, 'API 已响应，但模型没有返回文本。');
-        return text;
+        const finishReason = choice?.finish_reason;
+        if (!withDetails && !text.trim()) throw new RequestError(502, 'API 已响应，但模型没有返回文本。');
+        return withDetails ? { text, finishReason, ...(outputTokens === undefined ? {} : { outputTokens }) } : text;
     } catch (error) {
         if (error instanceof RequestError) throw error;
         if (timeout.aborted) throw new RequestError(504, 'API 请求超时。');
