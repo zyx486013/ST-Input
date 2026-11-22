@@ -3,6 +3,9 @@ const RESERVED = new Set([
     'max_new_tokens', 'max_length', '__proto__', 'constructor', 'prototype',
 ]);
 
+export const MAX_STANDARD_MESSAGE = 32000;
+export const MAX_POLISH_MESSAGE = 96000;
+
 export function validatePolishParameters(parameters) {
     if (!parameters || Object.getPrototypeOf(parameters) !== Object.prototype) {
         throw new Error('精修附加参数须为 YAML 或 JSON 键值对象。');
