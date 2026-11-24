@@ -1,3 +1,5 @@
+import { PolishStreamError, readPolishResponse, TIMEOUT_524_MESSAGE } from './polish-stream.js';
+
 const CUSTOM_REQUEST_FIELDS = ['custom_include_headers', 'custom_include_body', 'custom_exclude_body'];
 const NATIVE_POLISH_FIELDS = new Set([
     'reasoning_effort', 'include_reasoning', 'verbosity', 'temperature', 'top_p', 'top_k',
@@ -78,6 +80,15 @@ function checkPolishParameters(api, source, parameters) {
     }
 }
 
+function applyCurrentPolishSettings(st, data, maxTokens, requested, parameters, yaml) {
+    const custom = data.chat_completion_source === 'custom';
+    const outputTokens = preparePolishRequest(st.chatCompletionSettings, custom ? data : undefined, maxTokens, requested, parameters, yaml, 0);
+    if (Object.hasOwn(data, 'max_completion_tokens')) data.max_completion_tokens = outputTokens;
+    if (Object.hasOwn(data, 'max_tokens') || !Object.hasOwn(data, 'max_completion_tokens')) data.max_tokens = outputTokens;
+    if (!custom) Object.assign(data, parameters);
+    return outputTokens;
+}
+
 async function completeCurrentPolish(st, messages, maxTokens, requested, parameters, yaml) {
     const api = st.mainApi;
     const prompt = messages.map(message => ({ ...message }));
@@ -91,11 +102,7 @@ async function completeCurrentPolish(st, messages, maxTokens, requested, paramet
     const configure = data => {
         // ST keeps the text message objects when it constructs its request.
         if (!data.messages?.some(message => prompt.includes(message))) return;
-        const custom = data.chat_completion_source === 'custom';
-        outputTokens = preparePolishRequest(st.chatCompletionSettings, custom ? data : undefined, maxTokens, requested, parameters, yaml, 0);
-        if (Object.hasOwn(data, 'max_completion_tokens')) data.max_completion_tokens = outputTokens;
-        if (Object.hasOwn(data, 'max_tokens') || !Object.hasOwn(data, 'max_completion_tokens')) data.max_tokens = outputTokens;
-        if (!custom) Object.assign(data, parameters);
+        outputTokens = applyCurrentPolishSettings(st, data, maxTokens, requested, parameters, yaml);
     };
     st.eventSource.on(event, configure);
     try {
@@ -104,6 +111,60 @@ async function completeCurrentPolish(st, messages, maxTokens, requested, paramet
     } finally {
         st.eventSource.removeListener(event, configure);
     }
+}
+
+async function sendPolishChatCompletion(st, data, chatCompletion, signal, outputTokens, onText) {
+    const response = await (chatCompletion.fetch ?? globalThis.fetch)('/api/backends/chat-completions/generate', {
+        method: 'POST',
+        headers: st.getRequestHeaders(),
+        cache: 'no-cache',
+        body: JSON.stringify(data),
+        signal,
+    });
+    const state = { reasoning: '', images: [], signature: '', toolSignatures: {} };
+    return readPolishResponse(response, {
+        extractText: result => st.extractMessageFromData(result, 'openai'),
+        extractDelta: result => chatCompletion.getStreamingReply(result, state, {
+            chatCompletionSource: data.chat_completion_source,
+            overrideShowThoughts: false,
+        }),
+        outputTokens,
+        onText,
+    });
+}
+
+async function sendCurrentPolishChat(st, messages, maxTokens, requested, parameters, yaml, chatCompletion, signal, onText) {
+    const prompt = chatCompletion.createRawPrompt(messages.map(message => ({ ...message })), 'openai');
+    const event = { chat: prompt, dryRun: false };
+    await st.eventSource.emit(st.eventTypes.CHAT_COMPLETION_PROMPT_READY, event);
+    signal?.throwIfAborted();
+    const { generate_data: data } = await chatCompletion.createGenerationParameters(
+        st.chatCompletionSettings, st.getChatCompletionModel(), 'quiet', event.chat,
+    );
+    data.stream = chatCompletion.stream ?? true;
+    await st.eventSource.emit(st.eventTypes.CHAT_COMPLETION_SETTINGS_READY, data);
+    const outputTokens = applyCurrentPolishSettings(st, data, maxTokens, requested, parameters, yaml);
+    return sendPolishChatCompletion(st, data, chatCompletion, signal, outputTokens, onText);
+}
+
+async function sendSavedPolishChat(st, messages, profile, preset, source, overrides, maxTokens, chatCompletion, signal, onText) {
+    if (st.extensionSettings?.disabledExtensions?.includes('connection-manager')) {
+        throw new Error('Connection Manager is not available');
+    }
+    const proxy = chatCompletion.getProxies().find(item => item.name === profile.proxy);
+    const apiUrl = profile['api-url'];
+    const service = st.ChatCompletionService;
+    // Use ST's preset conversion with the same profile-specific fields as Connection Manager.
+    const data = service.createRequestData({
+        stream: chatCompletion.stream ?? true, messages, max_tokens: maxTokens, model: profile.model, chat_completion_source: source,
+        secret_id: profile['secret-id'], custom_url: apiUrl, vertexai_region: apiUrl, zai_endpoint: apiUrl,
+        siliconflow_endpoint: apiUrl, minimax_endpoint: apiUrl, pollinations_endpoint: apiUrl,
+        reverse_proxy: proxy?.url, proxy_password: proxy?.password,
+        custom_prompt_post_processing: profile['prompt-post-processing'],
+        ...overrides,
+    });
+    const payload = preset ? await service.presetToGeneratePayload(preset, {}, data) : data;
+    return sendPolishChatCompletion(st, payload, chatCompletion, signal, maxTokens, onText);
 }
 
 const KNOWN_FAILURES = [
@@ -123,6 +184,8 @@ function explainFailure(error) {
     let explanation;
     for (let depth = 0; cause && depth < 5; depth++, cause = cause.cause) {
         const message = typeof cause === 'string' ? cause : cause.message;
+        if (cause instanceof PolishStreamError) return cause.message;
+        if (/\b524\b/.test(message ?? '')) return TIMEOUT_524_MESSAGE;
         const match = KNOWN_FAILURES.find(([pattern]) => pattern.test(message ?? ''));
         if (match) explanation = match[1];
     }
@@ -137,7 +200,7 @@ function completionDetails(st, data, api) {
     };
 }
 
-export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens, { withDetails = false, requestedPolishTokens, parameters = {}, yaml } = {}) {
+export async function completeWithSillyTavern(st, messages, connection, profileId, signal, maxTokens, { withDetails = false, requestedPolishTokens, parameters = {}, yaml, chatCompletion, onText } = {}) {
     const useProfile = connection === 'profile';
     const service = st.ConnectionManagerRequestService;
     if (useProfile && (!service || !profileId)) {
@@ -146,8 +209,10 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
 
     let overrides;
     let selectedApi;
+    let profile;
+    let preset;
+    let profileSource;
     if (useProfile) {
-        let profile;
         try {
             profile = service.getProfile(profileId);
         } catch (error) {
@@ -155,7 +220,8 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
         }
         const api = st.CONNECT_API_MAP?.[profile.api];
         selectedApi = api?.selected;
-        const preset = profile.preset && (withDetails || api?.source === 'custom')
+        profileSource = api?.source;
+        preset = profile.preset && (withDetails || api?.source === 'custom')
             ? st.getPresetManager?.(selectedApi ?? 'openai')?.getCompletionPresetByName(profile.preset)
             : undefined;
         if (api?.source === 'custom') overrides = customRequestParameters(st, profile, preset);
@@ -177,6 +243,14 @@ export async function completeWithSillyTavern(st, messages, connection, profileI
     }
 
     try {
+        if (withDetails && chatCompletion) {
+            if (useProfile && selectedApi === 'openai' && profileSource) {
+                return await sendSavedPolishChat(st, messages, profile, preset, profileSource, overrides, maxTokens, chatCompletion, signal, onText);
+            }
+            if (!useProfile && st.mainApi === 'openai') {
+                return await sendCurrentPolishChat(st, messages, maxTokens, requestedPolishTokens, parameters, yaml, chatCompletion, signal, onText);
+            }
+        }
         if (useProfile) {
             const result = await service.sendRequest(profileId, messages, maxTokens, {
                 stream: false, extractData: !withDetails, includePreset: true, signal,

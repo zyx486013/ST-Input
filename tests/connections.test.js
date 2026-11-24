@@ -84,6 +84,84 @@ test('explains nested authentication errors and preserves user cancellations', a
     await assert.rejects(completeWithSillyTavern(st, prompt, 'profile', 'assistant', controller.signal), error => error === wrapped);
 });
 
+test('uses the current Chat Completion settings and streams with the extension cancellation signal', async () => {
+    const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': 'fixture' };
+    const st = {
+        mainApi: 'openai',
+        chatCompletionSettings: { chat_completion_source: 'custom' },
+        getChatCompletionModel: () => 'fixture',
+        getRequestHeaders: () => headers,
+        eventTypes: { CHAT_COMPLETION_PROMPT_READY: 'prompt', CHAT_COMPLETION_SETTINGS_READY: 'settings' },
+        eventSource: new EventEmitter(),
+    };
+    st.eventSource.on('prompt', event => {
+        event.chat[1].content += '（提示词事件）';
+    });
+    st.eventSource.on('settings', data => {
+        data.temperature = 0.6;
+    });
+    const signal = new AbortController().signal;
+    const parts = [];
+    const chatCompletion = {
+        createRawPrompt: messages => messages,
+        createGenerationParameters: async (settings, model, type, messages) => {
+            assert.equal(type, 'quiet');
+            return { generate_data: { ...settings, model, messages, custom_include_body: '{"max_completion_tokens":64}' } };
+        },
+        getStreamingReply: data => data.choices[0].delta?.content,
+        fetch: async (url, options) => {
+            assert.equal(url, '/api/backends/chat-completions/generate');
+            assert.equal(options.signal, signal);
+            assert.equal(options.headers, headers);
+            const data = JSON.parse(options.body);
+            assert.equal(data.stream, true);
+            assert.equal(data.max_tokens, 16384);
+            assert.equal(data.temperature, 0.6);
+            assert.equal(data.messages[1].content, '草稿内容（提示词事件）');
+            assert.deepEqual(JSON.parse(data.custom_include_body), { max_completion_tokens: 16384, reasoning_effort: 'max' });
+            return new Response('data: {"choices":[{"delta":{"content":"流式正文"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+        },
+    };
+    assert.deepEqual(await completeWithSillyTavern(st, prompt, 'current', '', signal, 16384, {
+        withDetails: true, chatCompletion, onText: text => parts.push(text),
+        parameters: { reasoning_effort: 'max' }, yaml: { parse: JSON.parse, stringify: JSON.stringify },
+    }), { text: '流式正文', finishReason: 'stop', outputTokens: 16384 });
+    assert.deepEqual(parts, ['流式正文']);
+    assert.equal(prompt[1].content, '草稿内容');
+});
+
+test('streams a saved connection with its preset and shows Cloudflare 524 without retrying', async () => {
+    const preset = { custom_url: 'https://assistant.example.com/v1', openai_max_tokens: 6000 };
+    const { st, sent } = setup({ preset });
+    st.getRequestHeaders = () => ({});
+    st.ChatCompletionService = {
+        createRequestData: data => data,
+        presetToGeneratePayload: async (input, _settings, data) => {
+            assert.equal(input, preset);
+            return { ...data, temperature: 0.7 };
+        },
+    };
+    let count = 0;
+    const chatCompletion = {
+        getProxies: () => [],
+        fetch: async (_url, options) => {
+            count++;
+            const data = JSON.parse(options.body);
+            assert.equal(data.stream, true);
+            assert.equal(data.chat_completion_source, 'custom');
+            assert.equal(data.custom_url, preset.custom_url);
+            assert.equal(data.max_tokens, 6000);
+            assert.equal(data.temperature, 0.7);
+            return new Response('<html>A timeout occurred</html>', { status: 524 });
+        },
+    };
+    await assert.rejects(completeWithSillyTavern(st, prompt, 'profile', 'assistant', undefined, 2400, {
+        withDetails: true, chatCompletion,
+    }), /指定连接调用失败。Cloudflare 524/);
+    assert.equal(count, 1);
+    assert.equal(sent.length, 0);
+});
+
 test('identifies incomplete saved connections before sending a request', async () => {
     const { st, sent } = setup({ url: '' });
     await assert.rejects(completeWithSillyTavern(st, prompt, 'profile', 'assistant'), /未保存 API 地址或模型/);

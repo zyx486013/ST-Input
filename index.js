@@ -1,6 +1,9 @@
 import { appendGuidance, GUIDANCE_KEY, readGuidance, saveGuide } from './writing-guidance.js';
 import { getRegexedString, regex_placement } from '/scripts/extensions/regex/engine.js';
+import { createRawPrompt } from '/script.js';
+import { createGenerationParameters, getStreamingReply, proxies } from '/scripts/openai.js';
 import { completeWithSillyTavern } from './connections.js';
+import { TIMEOUT_524_MESSAGE } from './polish-stream.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
 import { MAX_POLISH_OUTPUT_TOKENS, MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
@@ -11,6 +14,7 @@ const SERVICE = '/api/plugins/st-input';
 const DEFAULTS = { connection: 'current', profileId: '', history: true, historyCount: 8, fullscreen: true };
 const context = () => SillyTavern.getContext();
 const settings = () => context().extensionSettings[KEY] ??= { ...DEFAULTS };
+const chatCompletion = { createRawPrompt, createGenerationParameters, getStreamingReply, getProxies: () => proxies };
 
 function getPolishDisplayText(st, { index, text }) {
     const message = st.chat[index];
@@ -52,6 +56,7 @@ async function service(route, { method = 'GET', data, signal } = {}) {
     });
     const result = await response.json().catch(() => null);
     if (response.status === 404) throw new Error('找不到配套服务端插件。请安装插件、启用 enableServerPlugins，然后重启 SillyTavern。');
+    if (response.status === 524 || /\b524\b/.test(result?.error ?? '')) throw new Error(TIMEOUT_524_MESSAGE);
     if (!response.ok || !result) throw new Error(result?.error || `服务端请求失败（HTTP ${response.status}）。`);
     return result;
 }
@@ -167,6 +172,7 @@ function mount() {
                 <details data-st="polish-options" hidden>
                     <summary>精修参数</summary>
                     <div class="st-input-config">
+                        <label class="st-input-check" data-st="polish-stream-options" hidden><input type="checkbox" data-st="polish-stream">流式接收</label>
                         <label>输出上限（tokens） <input type="number" class="text_pole" min="1" max="${MAX_POLISH_OUTPUT_TOKENS}" step="1" placeholder="自动" data-st="polish-budget"></label>
                         <label data-st="polish-parameter-options">附加参数（YAML 或 JSON）
                             <textarea class="text_pole st-input-draft" rows="3" maxlength="8192" data-st="polish-parameters" placeholder="reasoning_effort: max"></textarea>
@@ -248,6 +254,45 @@ function mount() {
     const output = () => outputs.get(config.workspace);
     const setStatus = message => { output().status.textContent = message; };
     const setConfigStatus = message => { ui['config-status'].textContent = message; };
+    const streamPreview = element('details', null, 'st-input-config');
+    streamPreview.hidden = true;
+    const streamTitle = element('summary', '流式预览');
+    const streamText = element('textarea', null, 'text_pole st-input-draft');
+    streamText.setAttribute('aria-label', '已收到的精修正文');
+    streamText.readOnly = true;
+    streamText.rows = 8;
+    const copyStream = button('复制已收到的正文', async () => {
+        try {
+            await navigator.clipboard.writeText(streamText.value);
+        } catch {
+            streamText.focus();
+            streamText.select();
+        }
+    });
+    streamPreview.append(streamTitle, streamText, copyStream);
+    outputs.get(POLISH_MODE).result.before(streamPreview);
+    let streamFrame;
+    let receivedText = '';
+    function clearStreamPreview() {
+        cancelAnimationFrame(streamFrame);
+        receivedText = '';
+        streamText.value = '';
+        streamPreview.hidden = true;
+    }
+
+    function previewStreamText(text) {
+        if (streamPreview.hidden) {
+            streamTitle.textContent = '流式预览 · 正在接收';
+            streamPreview.hidden = false;
+            streamPreview.open = true;
+            setStatus('正在接收正文…');
+        }
+        receivedText = text;
+        cancelAnimationFrame(streamFrame);
+        streamFrame = requestAnimationFrame(() => {
+            streamText.value = receivedText;
+        });
+    }
     const saveSettings = () => {
         Object.assign(settings(), config);
         context().saveSettingsDebounced();
@@ -359,6 +404,7 @@ function mount() {
         const profile = config.connection === 'profile' ? getProfiles().find(item => item.id === config.profileId) : null;
         const connectionApi = config.connection === 'profile' ? st.CONNECT_API_MAP?.[profile?.api]?.selected : st.mainApi;
         ui['polish-parameter-options'].hidden = config.connection !== 'custom' && connectionApi !== 'openai';
+        ui['polish-stream-options'].hidden = config.connection === 'custom' || connectionApi !== 'openai';
         ui['connection-label'].textContent = {
             current: mainModel ? `当前连接 · ${mainModel}` : '当前聊天连接',
             profile: profile ? [profile.name, profile.model].filter(Boolean).join(' · ') : '选择连接配置',
@@ -373,6 +419,7 @@ function mount() {
         ui.logic.disabled = busy;
         ui.review.disabled = busy;
         ui['polish-method'].disabled = busy;
+        ui['polish-stream'].disabled = busy;
         ui['polish-generate'].disabled = busy || (ui['with-example'].checked && !ui['polish-example'].value.trim());
         ui['polish-undo'].disabled = busy;
         const apply = output().result.querySelector('[data-polish-apply]');
@@ -387,11 +434,14 @@ function mount() {
         revision += 1;
         pending?.controller.abort();
         if (!keepComparison) {
+            clearStreamPreview();
             comparison = undefined;
             for (const { status, result } of outputs.values()) {
                 result.replaceChildren();
                 status.textContent = '';
             }
+        } else if (receivedText) {
+            streamTitle.textContent = '流式预览 · 未完成';
         }
         lastPrompt = undefined;
         refreshPreview();
@@ -571,7 +621,8 @@ function mount() {
         const st = context();
         const chatId = st.getCurrentChatId();
         const polish = source.mode === POLISH_MODE;
-        if (!polish) output().result.replaceChildren();
+        if (polish) clearStreamPreview();
+        else output().result.replaceChildren();
         lastPrompt = undefined;
         setStatus('');
         try {
@@ -599,16 +650,23 @@ function mount() {
                 }
             }
             const maxTokens = polish ? Math.min(MAX_POLISH_OUTPUT_TOKENS, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
+            const useStream = polish && config.polishStreaming !== false && !ui['polish-stream-options'].hidden;
             const result = await complete(prompt, config.connection, config.profileId, signal, maxTokens, {
                 withDetails: polish,
                 requestedPolishTokens: source.requestedPolishTokens,
                 parameters: source.parameters,
                 yaml: SillyTavern.libs?.yaml,
+                chatCompletion: polish ? { ...chatCompletion, stream: useStream } : undefined,
+                onText: useStream ? text => {
+                    if (currentRevision === revision && !signal.aborted) previewStreamText(text);
+                } : undefined,
             });
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
             if (polish) {
                 checkPolishSource(snapshot);
-                showPolishedVersion(snapshot, source, parsePolishedReply(result.text, result.finishReason, result.outputTokens));
+                const text = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
+                clearStreamPreview();
+                showPolishedVersion(snapshot, source, text);
                 return;
             }
             if (target) {
@@ -624,7 +682,10 @@ function mount() {
             setStatus(textarea.value === source.draft ? '' : '输入框已有新编辑。建议保留在面板中供你预览。');
             renderResult(parseResult(result, source.mode, final), source);
         } catch (error) {
-            if (currentRevision === revision) setStatus(error.message);
+            if (currentRevision === revision) {
+                if (polish && receivedText) streamTitle.textContent = '流式预览 · 未完成';
+                setStatus(error.message);
+            }
         } finally {
             pending = undefined;
             updateBusy();
@@ -1072,6 +1133,11 @@ function mount() {
         setStatus('已删除保存的示范，正文保留在编辑框中。');
     });
     ui['polish-budget'].value = config.polishMaxTokens ?? '';
+    ui['polish-stream'].checked = config.polishStreaming !== false;
+    ui['polish-stream'].addEventListener('change', () => {
+        config.polishStreaming = ui['polish-stream'].checked;
+        saveSettings();
+    });
     ui['polish-budget'].addEventListener('change', () => {
         const field = ui['polish-budget'];
         if (!field.validity.valid) return;
