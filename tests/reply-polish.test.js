@@ -46,25 +46,30 @@ test('rebuilds full passages with or without a style example or chat context', (
         const polish = prepareReplyPolish(options);
         const rewrite = prepareReplyPolish({ ...options, rewrite: true });
         assert.equal(polish.prompt[0].content.includes('按原稿自身的语气轻修'), !polishExample);
-        assert.match(rewrite.prompt[0].content, /大修【待大修的回复】/);
+        assert.match(rewrite.prompt[0].content, /将【待大修的回复】/);
         assert.doesNotMatch(rewrite.prompt[0].content, /只精修|完整精修正文|轻修|句段可以照录/);
-        assert.match(rewrite.prompt[0].content, /只输出完整的大修正文/);
-        assert.match(rewrite.prompt[0].content, /“一整段叙事”或“一轮完整对白”/);
-        assert.match(rewrite.prompt[0].content, /指定“只修对白”则逐字保留旁白/);
-        assert.match(rewrite.prompt[0].content, /指定修改范围时，其余部分原样保留/);
-        assert.match(rewrite.prompt[0].content, /剥离该层 `>`/);
-        assert.ok(rewrite.prompt[0].content.includes('{"polished":"完整大修正文"}'));
-        assert.equal(rewrite.prompt[0].content.includes('### 三、范文迁移方法（核心）'), Boolean(polishExample));
-        assert.equal(rewrite.prompt[0].content.includes('段落长短、换行频率与停顿方式'), Boolean(polishExample));
-        assert.equal(rewrite.prompt[0].content.includes('### 三、叙事质感（无示范）'), !polishExample);
+        assert.match(rewrite.prompt[0].content, /只输出彻底重写后的完整正文/);
+        assert.match(rewrite.prompt[0].content, /原有的句式结构、修辞手法、段落排布一律作废/);
+        assert.match(rewrite.prompt[0].content, /指定“只修对白”，则逐字锁定旁白/);
+        assert.match(rewrite.prompt[0].content, /明确指定保留的句子或限定不改的部分/);
+        assert.match(rewrite.prompt[0].content, /全文旁白与对白一并彻底重写/);
+        assert.match(rewrite.prompt[0].content, /剥离输入文本外层的 `>`/);
+        assert.ok(rewrite.prompt[0].content.includes('{"polished":"完整重写正文"}'));
+        assert.equal(rewrite.prompt[0].content.includes('### 二、如何彻底写成【文风示范】的味道'), Boolean(polishExample));
+        assert.equal(rewrite.prompt[0].content.includes('段落长短比例与换行频率'), Boolean(polishExample));
+        assert.equal(rewrite.prompt[0].content.includes('### 二、重组叙事与对白（无示范）'), !polishExample);
         assert.equal(rewrite.prompt[0].content.includes('【文风示范】'), Boolean(polishExample));
-        assert.doesNotMatch(polish.prompt[0].content, /事实边界与原稿锚定/);
+        assert.doesNotMatch(polish.prompt[0].content, /原稿文字作废/);
         assert.equal(polish.prompt[0].content.includes('怎样用上一段提到的细节带出下一段'), Boolean(polishExample));
         assert.match(polish.prompt[0].content, /留在它们原本出现的场景/);
         assert.doesNotMatch(rewrite.prompt[0].content, /留在它们原本出现的场景/);
         assert.equal(rewrite.prompt[1].content.includes('【参考范文用词】'), Boolean(polishExample));
-        assert.match(rewrite.prompt[1].content, /【待大修的回复】\n> 原回复/);
-        assert.match(rewrite.prompt[1].content, /【本次精修要求】\n"只改对白"/);
+        assert.match(rewrite.prompt[1].content, /^【最近聊天｜从旧到新】\n无\n\n【待大修的回复】\n> 原回复/);
+        assert.ok(rewrite.prompt[1].content.endsWith('【本次精修要求】\n"只改对白"'));
+        if (polishExample) {
+            assert.match(rewrite.prompt[1].content, /【待大修的回复】[\s\S]+【文风示范】/);
+            assert.match(polish.prompt[1].content, /【文风示范】[\s\S]+【待精修的回复/);
+        }
         assert.doesNotMatch(rewrite.prompt[1].content, /【本轮用户输入】/);
         assert.deepEqual(rewrite.target, polish.target);
     }
@@ -83,11 +88,12 @@ test('treats the original as authoritative over preceding chat when rebuilding p
     assert.match(prompt[1].content, /【指定参考消息】\n.*续写这一轮/);
     assert.equal(prompt[1].content.split('续写这一轮').length, 2);
     assert.doesNotMatch(prompt[1].content, /后续尚未答复的任务|【参考原稿】|【本轮用户输入】/);
-    assert.match(prompt[0].content, /以【待大修的回复】为唯一剧情依据/);
+    assert.match(prompt[0].content, /重写前先从底稿中提取不可篡改的事实清单/);
     assert.match(prompt[0].content, /【最近聊天｜从旧到新】与【指定参考消息】仅供核对/);
-    assert.match(prompt[0].content, /事件先后因果、物件位置归属/);
-    assert.match(prompt[0].content, /前置条件、后果、生理感受与心理活动一律留白/);
-    assert.ok(prompt[1].content.endsWith('【待大修的回复】\n> 原回复「你来了。」\n>\n> 她把门拉开。'));
+    assert.match(prompt[0].content, /事情的先后因果、物件的归属与位置/);
+    assert.match(prompt[0].content, /不得编造底稿没有的新事件、新承诺、新背景设定/);
+    assert.match(prompt[0].content, /可用微动作呈现底稿已有的情绪/);
+    assert.ok(prompt[1].content.endsWith('【待大修的回复】\n> 原回复「你来了。」\n>\n> 她把门拉开。\n\n【文风示范】\n> 范文'));
     const contextDisabled = prepareReplyPolish({ ...source, historyCount: 0 });
     assert.doesNotMatch(contextDisabled.prompt[1].content, /续写这一轮|已建立的前文/);
     assert.match(contextDisabled.prompt[1].content, /【待大修的回复】\n> 原回复/);
@@ -123,7 +129,7 @@ test('includes long examples up to the limit verbatim alongside the full source 
         const { prompt } = prepareReplyPolish({ ...source, rewrite });
         assert.ok(prompt[1].content.length > 32000);
         assert.ok(prompt[1].content.includes(`【文风示范】\n> ${polishExample.replace('\n', '\n> ')}\n\n`));
-        assert.ok(prompt[1].content.endsWith(`> ${reply}`));
+        assert.ok(prompt[1].content.includes(`> ${reply}${rewrite ? '\n\n【文风示范】' : ''}`));
     }
     assert.throws(() => prepareReplyPolish({ ...source, polishExample: polishExample + '字' }), /文风示范超过 32,000 字/);
     const oversized = getChatMessages([{ mes: '原'.repeat(96000) }]);
