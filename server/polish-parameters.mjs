@@ -5,6 +5,7 @@ const RESERVED = new Set([
 
 export const MAX_STANDARD_MESSAGE = 32000;
 export const MAX_POLISH_MESSAGE = 96000;
+export const MAX_POLISH_OUTPUT_TOKENS = 65536;
 
 export function validatePolishParameters(parameters) {
     if (!parameters || Object.getPrototypeOf(parameters) !== Object.prototype) {
@@ -17,5 +18,5 @@ export function validatePolishParameters(parameters) {
 }
 
 export function isPolishTokenLimit(value) {
-    return Number.isInteger(value) && value >= 1 && value <= 65536;
+    return Number.isInteger(value) && value >= 1 && value <= MAX_POLISH_OUTPUT_TOKENS;
 }

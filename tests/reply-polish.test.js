@@ -27,7 +27,6 @@ test('example and baseline use the same full target and only context preceding i
 
     const noContext = prepareReplyPolish({ ...source, historyCount: 0, polishExample });
     assert.doesNotMatch(noContext.prompt[1].content, /前文/);
-    assert.throws(() => prepareReplyPolish({ ...source, history: [{ index: 0, role: '模型', text: '原'.repeat(8001) }], polishExample }), /原回复超过/);
 });
 
 test('adds optional diction guidance only with an example and keeps the handwritten notes', () => {
@@ -109,19 +108,26 @@ test('uses display-transformed text for the target and context, keeping the orig
 test('includes long examples up to the limit verbatim alongside the full source reply', () => {
     const suffix = '\n「示范结尾。」  ';
     const polishExample = ' 夜'.repeat(Math.floor((MAX_EXAMPLE - suffix.length) / 2)).padEnd(MAX_EXAMPLE - suffix.length) + suffix;
-    const reply = '原'.repeat(8000);
+    const reply = '原'.repeat(15000) + '原稿结尾';
     const source = { history: getChatMessages([{ mes: reply }]), historyCount: 0, polishExample, polishNotes: '保留对白' };
-    const { prompt } = prepareReplyPolish(source);
-    assert.ok(prompt[1].content.length > 32000);
-    assert.ok(prompt[1].content.includes(`【文风示范】\n> ${polishExample.replace('\n', '\n> ')}\n\n`));
-    assert.ok(prompt[1].content.endsWith(`> ${reply}`));
+    for (const rewrite of [false, true]) {
+        const { prompt } = prepareReplyPolish({ ...source, rewrite });
+        assert.ok(prompt[1].content.length > 32000);
+        assert.ok(prompt[1].content.includes(`【文风示范】\n> ${polishExample.replace('\n', '\n> ')}\n\n`));
+        assert.ok(prompt[1].content.endsWith(`> ${reply}`));
+    }
     assert.throws(() => prepareReplyPolish({ ...source, polishExample: polishExample + '字' }), /文风示范超过 32,000 字/);
+    const oversized = getChatMessages([{ mes: '原'.repeat(96000) }]);
+    assert.throws(() => prepareReplyPolish({ ...source, history: oversized }), /超过 96,000 字符的请求上限/);
 });
 
 test('accepts plain prose and legacy envelopes without changing Markdown or whitespace', () => {
     const value = '\n  一行\n\n<text>🚪</text>  ';
     assert.equal(parsePolishedReply(value), value);
     assert.equal(parsePolishedReply('**「进来。」**\n\n她把门拉开。'), '**「进来。」**\n\n她把门拉开。');
+    const long = '字'.repeat(15000) + '修稿结尾';
+    assert.equal(parsePolishedReply(long), long);
+    assert.equal(parsePolishedReply(JSON.stringify({ polished: long })), long);
     assert.equal(parsePolishedReply(`\`\`\`json\n${JSON.stringify({ polished: value })}\n\`\`\``), value);
     assert.equal(parsePolishedReply('```js\nconsole.log("原样保留");\n```'), '```js\nconsole.log("原样保留");\n```');
 });
@@ -134,7 +140,6 @@ test('reports a real token cutoff separately from malformed legacy output and em
     assert.throws(() => parsePolishedReply('```JSON\n{"polished":"未写完'), /格式不完整/);
     assert.throws(() => parsePolishedReply(''), /可用/);
     assert.throws(() => parsePolishedReply('{"polished":" "}'), /可用/);
-    assert.throws(() => parsePolishedReply(JSON.stringify({ polished: '字'.repeat(12001) })), /太长/);
 });
 
 test('migrates the single saved example once and keeps existing named examples', () => {
@@ -155,6 +160,7 @@ test('migrates the single saved example once and keeps existing named examples',
 
 test('applies only the selected swipe and restores the exact raw text even after display regex', async () => {
     const raw = '<hidden>' + '字'.repeat(12001) + '</hidden>' + original;
+    const longRevision = revised.repeat(1000);
     const message = {
         mes: raw, swipe_id: 1, swipes: ['旧稿', raw],
         extra: { display_text: '译文', reasoning: '原推理' },
@@ -173,15 +179,15 @@ test('applies only the selected swipe and restores the exact raw text even after
     };
     const target = { message, index: 1, swipeId: 1, text: original, rawText: raw, chatId, chatLength: 2 };
     assert.ok(samePolishTarget(st, target));
-    await writePolishedReply(st, target, revised, raw, () => st);
-    assert.equal(message.mes, revised);
-    assert.deepEqual(message.swipes, ['旧稿', revised]);
+    await writePolishedReply(st, target, longRevision, raw, () => st);
+    assert.equal(message.mes, longRevision);
+    assert.deepEqual(message.swipes, ['旧稿', longRevision]);
     assert.deepEqual(message.extra, { reasoning: '原推理' });
     assert.deepEqual(message.swipe_info, [{ extra: { display_text: '旧稿译文' } }, { extra: {} }]);
     assert.equal(st.chatMetadata.tainted, true);
-    assert.deepEqual(calls, [['render', 1, revised], ['edited', 1], ['render', 1, revised], ['updated', 1], ['save']]);
+    assert.deepEqual(calls, [['render', 1, longRevision], ['edited', 1], ['render', 1, longRevision], ['updated', 1], ['save']]);
 
-    await writePolishedReply(st, target, raw, revised, () => st);
+    await writePolishedReply(st, target, raw, longRevision, () => st);
     assert.equal(message.mes, raw);
     assert.deepEqual(message.swipes, ['旧稿', raw]);
 
