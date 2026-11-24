@@ -3,8 +3,8 @@ import { getRegexedString, regex_placement } from '/scripts/extensions/regex/eng
 import { completeWithSillyTavern } from './connections.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
-import { MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
-import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISHED_REPLY, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
+import { MAX_POLISH_OUTPUT_TOKENS, MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
+import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
 
 const KEY = 'st-input';
 const SERVICE = '/api/plugins/st-input';
@@ -167,7 +167,7 @@ function mount() {
                 <details data-st="polish-options" hidden>
                     <summary>精修参数</summary>
                     <div class="st-input-config">
-                        <label>输出上限（tokens） <input type="number" class="text_pole" min="1" max="65536" step="1" placeholder="自动" data-st="polish-budget"></label>
+                        <label>输出上限（tokens） <input type="number" class="text_pole" min="1" max="${MAX_POLISH_OUTPUT_TOKENS}" step="1" placeholder="自动" data-st="polish-budget"></label>
                         <label data-st="polish-parameter-options">附加参数（YAML 或 JSON）
                             <textarea class="text_pole st-input-draft" rows="3" maxlength="8192" data-st="polish-parameters" placeholder="reasoning_effort: max"></textarea>
                         </label>
@@ -593,12 +593,12 @@ function mount() {
                     const saved = customConfig ?? await service('config', { signal });
                     signal.throwIfAborted();
                     if (messageLength > (saved.maxPolishMessage ?? MAX_STANDARD_MESSAGE)) {
-                        throw new Error('此长示范需要新版自定义 API 服务端插件。请更新插件并重启 SillyTavern。');
+                        throw new Error('本次请求超过当前自定义 API 服务端插件的长度上限。请更新配套插件并重启 SillyTavern。');
                     }
                     if (needsParameters && !saved.polishParameters) throw new Error('自定义 API 的精修参数需要新版服务端插件，请更新插件并重启 SillyTavern。');
                 }
             }
-            const maxTokens = polish ? Math.min(8192, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
+            const maxTokens = polish ? Math.min(MAX_POLISH_OUTPUT_TOKENS, Math.max(2400, target.text.length + 800)) : target ? 2400 : undefined;
             const result = await complete(prompt, config.connection, config.profileId, signal, maxTokens, {
                 withDetails: polish,
                 requestedPolishTokens: source.requestedPolishTokens,
@@ -671,7 +671,6 @@ function mount() {
         const editor = element('textarea', null, 'text_pole st-input-draft');
         editor.setAttribute('aria-label', '编辑精修稿');
         editor.rows = 6;
-        editor.maxLength = MAX_POLISHED_REPLY;
         editor.value = versions.get(versionName);
         editor.hidden = true;
         const edit = button('编辑精修稿', () => {

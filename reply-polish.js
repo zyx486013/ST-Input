@@ -7,8 +7,6 @@ export const POLISH_LABEL = '精修回复';
 export const MAX_EXAMPLE = 32000;
 export const MAX_EXAMPLE_NAME = 60;
 export const MAX_POLISH_NOTES = 1200;
-export const MAX_POLISHED_REPLY = 12000;
-const MAX_SOURCE = 8000;
 
 export function migratePolishExample(settings) {
     if (!Object.hasOwn(settings, 'polishExample')) return false;
@@ -61,7 +59,6 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     if (!original) throw new Error('当前聊天还没有可以精修的模型回复。');
     const target = { ...original, rawText: original.text, text: displayText(original) };
     if (!target.text.trim()) throw new Error('这条回复经 SillyTavern 正则处理后没有可精修的正文。');
-    if (target.text.length > MAX_SOURCE) throw new Error(`原回复超过 ${MAX_SOURCE} 字，请缩短后再试。`);
     if (polishExample.length > MAX_EXAMPLE) throw new Error(`文风示范超过 ${MAX_EXAMPLE.toLocaleString('zh-CN')} 字，请缩短后再试。`);
     if (polishNotes.length > MAX_POLISH_NOTES) throw new Error('本次精修要求过长，请缩短后再试。');
 
@@ -95,7 +92,9 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     sections.push(`【${targetHeading}】\n${quoteProse(target.text)}`);
 
     const content = sections.join('\n\n');
-    if (content.length > MAX_POLISH_MESSAGE) throw new Error('精修提示词过长，请缩短示范或减少参考消息。');
+    if (content.length > MAX_POLISH_MESSAGE) {
+        throw new Error(`本次${operation}请求有 ${content.length.toLocaleString('zh-CN')} 个字符，超过 ${MAX_POLISH_MESSAGE.toLocaleString('zh-CN')} 字符的请求上限。可缩短示范、减少参考消息，或分段处理原回复。`);
+    }
     const modeRule = rewrite ? DEEP_REVISION_WITHOUT_EXAMPLE : POLISH_WITHOUT_EXAMPLE;
     const system = [
         ...(rewrite ? DEEP_REVISION_RULES : POLISH_RULES),
@@ -131,7 +130,6 @@ export function parsePolishedReply(input, finishReason, outputTokens) {
         }
     }
     if (typeof text !== 'string' || !text.trim()) throw new Error('模型没有返回可用的精修正文。');
-    if (text.length > MAX_POLISHED_REPLY) throw new Error('精修稿太长，请在本次要求里指定较短的长度。');
     return text;
 }
 
@@ -143,7 +141,7 @@ export function samePolishTarget(st, target, expectedText = target.rawText) {
 
 export async function writePolishedReply(st, target, text, expectedText, getContext) {
     if (!samePolishTarget(st, target, expectedText)) throw new Error('模型回复或版本已变化，请重新打开精修。');
-    if (!text.trim() || (text !== target.rawText && text.length > MAX_POLISHED_REPLY)) throw new Error('请输入有效的精修正文。');
+    if (!text.trim()) throw new Error('请输入有效的精修正文。');
 
     const { message, index, swipeId } = target;
     message.mes = text;
