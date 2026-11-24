@@ -1,6 +1,6 @@
 {
   "name": "st-input",
-  "version": "1.8.6",
+  "version": "1.8.7",
   "private": true,
   "type": "module",
   "engines": { "node": ">=20" },
