@@ -14,7 +14,7 @@ https://github.com/zyx486013/ST-Input
 
 ### 在输入助手里配置自定义 API
 
-自定义模式需要配套服务端插件。将仓库的 `server` 目录复制为 **SillyTavern 根目录下的 `plugins/st-input`**，确认其中直接包含 `index.mjs`、`upstream.mjs` 和 `polish-parameters.mjs`。在 SillyTavern 的 `config.yaml` 中设置 `enableServerPlugins: true`，然后重启 SillyTavern。更新前端扩展后，手动复制新版服务端文件并重启即可更新服务端插件。
+自定义模式需要配套服务端插件。将仓库的 `server` 目录复制为 **SillyTavern 根目录下的 `plugins/st-input`**，确认其中直接包含 `index.mjs`、`upstream.mjs`、`polish-parameters.mjs` 和 `visible-reasoning.mjs`。在 SillyTavern 的 `config.yaml` 中设置 `enableServerPlugins: true`，然后重启 SillyTavern。更新前端扩展后，手动复制新版服务端文件并重启即可更新服务端插件。
 
 用 ST 管理员账号打开「输入助手 → 连接设置 → 自定义 API」，填入：
 
@@ -92,6 +92,8 @@ reasoning_effort: max
 附加参数会保存并用于两种精修。自定义 Chat Completion 连接可填写服务商提供的生成参数，原生 Chat Completion 连接经 SillyTavern 转发常见生成参数。使用输入助手的独立「自定义 API」时，需要更新配套服务端插件以使用手动额度和附加参数。
 
 跟随当前 Chat Completion 连接或使用已保存的 Chat Completion 连接时，精修和大修默认流式接收。生成中的正文显示在「流式预览」里，完整稿收到后进入对比区。中断或达到输出上限时，预览保留已收到的文字，可复制。服务商不兼容流式时，可在「精修参数」里关掉「流式接收」。独立「自定义 API」和 Text Completion 连接使用整包响应。
+
+模型接口返回可见推理或推理摘要时，可以展开「模型思考 · 本次请求」查看。流式请求随接收更新，整包请求在收到响应后显示。对比、复制成稿和替换聊天回复使用正文。独立「自定义 API」需更新配套服务端插件才能读取推理字段。
 
 如果页面显示 Cloudflare 524，表示代理等待响应超时。流式接收需要服务商及时发出数据，且中间代理及时转发。仍超时时，可降低推理强度或通过 SSH 转发访问 SillyTavern。
 

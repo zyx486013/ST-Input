@@ -1,3 +1,5 @@
+import { extractVisibleReasoning } from './server/visible-reasoning.mjs';
+
 export const TIMEOUT_524_MESSAGE = 'Cloudflare 524。代理等待响应超时。可降低推理强度后重试，或通过直连、SSH 转发访问 SillyTavern。';
 
 export class PolishStreamError extends Error {}
@@ -19,7 +21,7 @@ function finishReasonOf(data) {
         ?? data?.stop_type;
 }
 
-export async function readPolishResponse(response, { extractText, extractDelta, outputTokens, onText }) {
+export async function readPolishResponse(response, { extractText, extractDelta, outputTokens, onText, onReasoning }) {
     if (response.status === 524) {
         await response.body?.cancel().catch(() => {});
         throw new PolishStreamError(TIMEOUT_524_MESSAGE);
@@ -39,6 +41,7 @@ export async function readPolishResponse(response, { extractText, extractDelta, 
     let buffer = '';
     let jsonResponse;
     let text = '';
+    let reasoning = '';
     let finishReason;
     let ended = false;
     let reachedEof = false;
@@ -73,6 +76,11 @@ export async function readPolishResponse(response, { extractText, extractDelta, 
                 checkApiError(data);
                 if (data.choices?.[0]?.index > 0) continue;
                 finishReason = finishReasonOf(data) ?? finishReason;
+                const thought = extractVisibleReasoning(data);
+                if (thought) {
+                    reasoning += thought;
+                    onReasoning?.(reasoning);
+                }
                 const delta = extractDelta(data);
                 if (typeof delta === 'string' && delta) {
                     text += delta;
@@ -90,6 +98,8 @@ export async function readPolishResponse(response, { extractText, extractDelta, 
                 throw new PolishStreamError('模型返回的精修响应不完整。');
             }
             checkApiError(data);
+            reasoning = extractVisibleReasoning(data);
+            if (reasoning) onReasoning?.(reasoning);
             text = extractText(data);
             if (text) onText?.(text);
             finishReason = finishReasonOf(data);
@@ -99,7 +109,7 @@ export async function readPolishResponse(response, { extractText, extractDelta, 
         if (/^(content_filter|safety|blocked)$/i.test(finishReason ?? '')) {
             throw new PolishStreamError('模型提前停止，未返回完整稿件。');
         }
-        return { text, finishReason, outputTokens };
+        return { text, finishReason, outputTokens, ...(reasoning ? { reasoning } : {}) };
     } finally {
         if (!reachedEof) await reader.cancel().catch(() => {});
         reader.releaseLock();

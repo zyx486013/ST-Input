@@ -17,25 +17,35 @@ test('delivers visible prose before the stream ends, including across UTF-8 chun
     let notify;
     const first = new Promise(resolve => { notify = resolve; });
     const partials = [];
+    const thinking = [];
+    let notifyThinking;
+    const firstThought = new Promise(resolve => { notifyThinking = resolve; });
     const result = readPolishResponse(response, {
         ...extractors,
         onText: text => {
             partials.push(text);
             notify();
         },
+        onReasoning: text => {
+            thinking.push(text);
+            notifyThinking();
+        },
         outputTokens: 16384,
     });
+    write.enqueue(encode(event({ choices: [{ index: 0, delta: { reasoning_content: '仅推理' } }] })));
+    await firstThought;
+    assert.deepEqual(thinking, ['仅推理']);
+    assert.deepEqual(partials, []);
     const firstPacket = encode(delta('舟'));
     const char = firstPacket.indexOf(encode('舟')[0]);
     write.enqueue(firstPacket.slice(0, char + 1));
     write.enqueue(firstPacket.slice(char + 1));
     await first;
     assert.deepEqual(partials, ['舟']);
-    write.enqueue(encode(event({ choices: [{ index: 0, delta: { reasoning_content: '仅推理' } }] })));
     write.enqueue(encode(delta('行。')));
     write.enqueue(encode(event({ choices: [{ index: 0, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n'));
     write.close();
-    assert.deepEqual(await result, { text: '舟行。', finishReason: 'stop', outputTokens: 16384 });
+    assert.deepEqual(await result, { text: '舟行。', finishReason: 'stop', outputTokens: 16384, reasoning: '仅推理' });
 });
 
 test('keeps token cutoff and rejects a stream that ends without a completion marker', async () => {
@@ -52,12 +62,30 @@ test('keeps token cutoff and rejects a stream that ends without a completion mar
 
 test('handles Claude message metadata and a normal JSON reply without resending the request', async () => {
     const claude = new Response(event({ type: 'message_start', message: { id: 'test' } })
+        + event({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Claude 摘要' } })
         + event({ type: 'content_block_delta', delta: { text: '正文' } })
         + event({ type: 'message_delta', delta: { stop_reason: 'end_turn' } })
         + event({ type: 'message_stop' }));
-    assert.deepEqual(await readPolishResponse(claude, extractors), { text: '正文', finishReason: 'end_turn', outputTokens: undefined });
+    assert.deepEqual(await readPolishResponse(claude, extractors), { text: '正文', finishReason: 'end_turn', outputTokens: undefined, reasoning: 'Claude 摘要' });
     const json = new Response(JSON.stringify({ choices: [{ message: { content: '同一请求的正文' }, finish_reason: 'stop' }] }));
     assert.deepEqual(await readPolishResponse(json, extractors), { text: '同一请求的正文', finishReason: 'stop', outputTokens: undefined });
+});
+
+test('shows only readable reasoning records and preserves prose in a non-streaming reply', async () => {
+    const json = new Response(JSON.stringify({ choices: [{
+        message: {
+            content: '正文',
+            reasoning_details: [
+                { type: 'reasoning.summary', summary: '先核对场景。' },
+                { type: 'reasoning.encrypted', data: 'opaque', text: '不可展示' },
+                { type: 'reasoning.text', text: '接着核对对白。', signature: 'opaque' },
+            ],
+        },
+        finish_reason: 'stop',
+    }] }));
+    assert.deepEqual(await readPolishResponse(json, extractors), {
+        text: '正文', finishReason: 'stop', outputTokens: undefined, reasoning: '先核对场景。接着核对对白。',
+    });
 });
 
 test('reports Cloudflare HTML timeouts and rejects errors reported inside a stream', async () => {

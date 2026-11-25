@@ -42,7 +42,8 @@ test('requests an allowed local OpenAI endpoint, handles model lists and refuses
         } else if (req.url === '/v1/chat/completions') {
             const capped = JSON.parse(calls.at(-1).body).messages[0].content === '只有推理';
             res.end(JSON.stringify({ choices: [{
-                message: { content: capped ? '' : '正常' }, finish_reason: capped ? 'length' : 'stop',
+                message: { content: capped ? '' : '正常', ...(capped ? { reasoning_content: '可见推理' } : {}) },
+                finish_reason: capped ? 'length' : 'stop',
             }] }));
         } else {
             res.writeHead(302, { Location: '/v1/models' }).end();
@@ -66,7 +67,7 @@ test('requests an allowed local OpenAI endpoint, handles model lists and refuses
     assert.deepEqual(await callUpstream(config, 'generate', { messages, withDetails: true }), { text: '正常', finishReason: 'stop' });
     assert.deepEqual(await callUpstream(config, 'generate', {
         messages: [{ role: 'user', content: '只有推理' }], withDetails: true,
-    }), { text: '', finishReason: 'length' });
+    }), { text: '', finishReason: 'length', reasoning: '可见推理' });
     assert.deepEqual(await callUpstream(config, 'generate', {
         messages, withDetails: true, outputTokens: 8192, parameters: { reasoning_effort: 'max' },
     }), { text: '正常', finishReason: 'stop', outputTokens: 8192 });
