@@ -798,6 +798,10 @@ function mount() {
             node.append(...items.map(item => element('li', item)));
             return node;
         }
+        function appendIssues(body, heading, issues) {
+            body.append(element('strong', heading));
+            for (const issue of issues) body.append(element('blockquote', issue.quote), element('p', issue.problem));
+        }
         for (const stage of team.stages) {
             const result = team.results[stage];
             if ((stage === 'repair' || stage === 'verify') && !revisionStageNeeded(stage, team.results)) continue;
@@ -810,8 +814,7 @@ function mount() {
             const body = element('div', null, 'st-input-config st-input-team-record');
             if (result?.facts) body.append(element('strong', '原稿事实'), list(result.facts));
             if (result?.issues) {
-                body.append(element('strong', result.issues.length ? '发现的问题' : '本次未发现明确问题'));
-                for (const issue of result.issues) body.append(element('blockquote', issue.quote), element('p', issue.problem));
+                appendIssues(body, result.issues.length ? '发现的问题' : '本次未发现明确问题', result.issues);
             }
             if (result?.opening) {
                 body.append(element('strong', '开场切入点'), element('p', result.opening), list(result.beats));
@@ -820,7 +823,14 @@ function mount() {
             if (skipped) body.append(element('p', '审校没有发现需要剧情编辑的问题。'));
             if (stage === 'write' && result) body.append(element('p', '完整稿在下方对比区。可更换范文后重跑文风编辑。'));
             if (stage === 'repair' && result) {
-                body.append(element('p', result.count ? `提出 ${result.count} 处局部修改。` : '没有找到可落实的局部修改。'));
+                const count = result.edits.length;
+                body.append(element('p', count ? `提出 ${count} 处局部修改。` : '没有找到可落实的局部修改。'));
+            }
+            if (stage === 'verify' && result) {
+                const { fixed, remaining, introduced } = result;
+                body.append(element('p', `返工稿修正了 ${fixed} 处终审问题，剩余 ${remaining.length} 处。`));
+                if (remaining.length) appendIssues(body, '尚未修正的终审问题', remaining);
+                if (introduced.length) appendIssues(body, '返工引入或加重的问题', introduced);
             }
             if (team.retry === stage) {
                 body.append(button(`继续${REVISION_ROLES[stage]}`, () => void runTeam(stage, undefined, team.retrySingle)));
@@ -957,10 +967,9 @@ function mount() {
                     showTeamDraft(prose);
                     continue;
                 }
-                const candidate = stage === 'verify' ? job.results.repair.text : job.results.write;
-                const record = parseRevisionStage(stage, job.mode, result, job.request.narrative, candidate);
+                const record = parseRevisionStage(stage, job.mode, result, job.request.narrative, job.results.write, job.results);
                 job.results[stage] = record;
-                if (stage === 'verify' && !record.issues.length) showTeamDraft(candidate);
+                if (stage === 'verify' && record.accepted) showTeamDraft(job.results.repair.text);
                 if (stage === 'plan' && record.choices.length) {
                     job.awaitingApproval = true;
                     setStatus('请选择剧情方案，再生成正文。');
@@ -971,9 +980,19 @@ function mount() {
             if (stages.at(-1) === 'plan') setStatus('剧情编辑已完成。');
             const { audit, verify } = job.results;
             if (verify) {
-                setStatus(verify.issues.length ? '复核仍有问题，已保留返工前的大修稿。' : '局部返工通过复核，大修稿已更新。');
+                if (verify.introduced.length) {
+                    setStatus(`返工引入或加重 ${verify.introduced.length} 处问题，已保留返工前的稿件。详情见返工复核。`);
+                } else if (!verify.accepted) {
+                    setStatus('返工未修正终审指出的问题，已保留返工前的稿件。详情见返工复核。');
+                } else if (verify.remaining.length) {
+                    setStatus(`已采用返工稿，修正 ${verify.fixed} 处问题，剩余 ${verify.remaining.length} 处。详情见返工复核。`);
+                } else {
+                    setStatus(`已修正全部 ${verify.fixed} 处终审问题，大修稿已更新。`);
+                }
             } else if (audit) {
-                setStatus(audit.issues.length ? '终审发现问题，已保留返工前的大修稿。' : '终审完成，本次未发现明确问题。');
+                setStatus(audit.issues.length
+                    ? `终审发现 ${audit.issues.length} 处问题，本轮没有可应用的局部修改。`
+                    : '终审完成，本次未发现明确问题。');
             }
         } catch (error) {
             if (isCurrent()) {

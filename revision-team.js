@@ -19,7 +19,7 @@ export function revisionStages(mode, audit) {
 export function revisionStageNeeded(stage, results) {
     if (stage === 'plan') return Boolean(results.review?.issues.length);
     if (stage === 'repair') return Boolean(results.audit?.issues.length);
-    if (stage === 'verify') return Boolean(results.repair?.count);
+    if (stage === 'verify') return Boolean(results.repair?.edits.length);
     return true;
 }
 
@@ -52,17 +52,28 @@ export function buildRevisionStage(stage, mode, request, results, approved, exam
         content.push(quoteBlock('approved_changes', JSON.stringify(approved)), quoteBlock('revised_draft', draft));
         if (example) content.push(quoteBlock('style_sample', example.slice(0, 2000)));
     }
-    if (stage === 'repair' || stage === 'verify') {
+    if (stage === 'repair') {
         content.push(quoteBlock('audit_issues', JSON.stringify(results.audit.issues)));
+    }
+    if (stage === 'verify') {
+        const issues = results.audit.issues.map((issue, index) => ({ id: index + 1, ...issue }));
+        const edits = results.repair.edits.map((edit, index) => ({ id: index + 1, ...edit }));
+        content.push(
+            quoteBlock('audit_issues', JSON.stringify(issues)),
+            quoteBlock('applied_edits', JSON.stringify(edits)),
+        );
     }
     if (stage === 'repair') {
         rules.push('只处理 <audit_issues> 中列出的问题。涉及剧情的修正只用于恢复底稿事实、因果和用户决定权，或落实已选方案。涉及表达的修正只调整对应措辞或对白声线。若两类问题在同一段，合并为一处编辑。');
         rules.push('只输出 JSON，格式为 {"edits":[{"before":"改稿中唯一出现的连续原文","after":"替换内容"}]}。before 必须逐字摘自 <revised_draft>，无须外层引文标记。只引用要改的一小段，重叠的改动合并。补写遗漏内容时以相邻原句为 before，在 after 保留该句并补入必要内容。可用空 after 删除多余内容。最多八处；无可靠修法则用空数组。');
     }
     if (stage === 'audit' || stage === 'verify') {
-        rules.push('核对是否遗漏事实、加戏、破坏因果或结尾、替用户角色行动、改动锁定文字、明显偏离角色声线或本次明确的表达要求。参考范文只用于判断表达，允许采用不同笔法。approved_changes 仅列已选方案，其指定范围内的变化符合要求。只报告具体且值得修正的问题，引用底稿或待审稿中的连续原文。');
-        if (stage === 'verify') rules.push('逐一核对 <audit_issues> 的问题是否已解决，另外检查返工新增的问题。已解决的问题无须再列出。');
-        rules.push('只输出 JSON，格式为 {"issues":[{"quote":"原文引句","problem":"差别和影响"}]}。没有发现问题时 issues 为空数组，最多八条。');
+        rules.push('核对是否遗漏事实、加戏、破坏因果或结尾、替用户角色行动、改动锁定文字、明显偏离角色声线或本次明确的表达要求。参考范文只用于判断表达，允许采用不同笔法。approved_changes 仅列已选方案，其指定范围内的变化符合要求。只报告具体且值得修正的问题。');
+        if (stage === 'audit') rules.push('引用底稿或待审稿中的连续原文。只输出 JSON，格式为 {"issues":[{"quote":"原文引句","problem":"差别和影响"}]}。没有发现问题时 issues 为空数组，最多八条。');
+    }
+    if (stage === 'verify') {
+        rules.push('逐项检查 <audit_issues> 中的终审问题，把仍未修好的问题编号列入 remaining。对照 <applied_edits> 中每处修改的 before 和 after，仅把本轮修改引入或加重的具体问题列入 introduced。已有问题如果没有加重，以及单纯的措辞偏好，不列入 introduced。每个新增问题要写出对应的修改编号 edit，quote 逐字引用该处的 before 或 after。');
+        rules.push('只输出 JSON，格式为 {"remaining":[2],"introduced":[{"edit":1,"quote":"对应改动引句","problem":"这处改动引入的问题和影响"}]}。remaining 使用终审问题编号，不能重复。各数组没有对应问题时写 []。');
     }
     const user = content.join('\n\n');
     if (user.length > MAX_POLISH_MESSAGE) throw new Error('本阶段的原稿与编辑记录超过请求长度上限。请减少聊天参考或分段处理。');
@@ -85,7 +96,7 @@ function applyRepairs(draft, edits) {
         if (typeof after !== 'string' || after.length > 1200 || before === after) throw new Error('替换内容无效。');
         const start = draft.indexOf(before);
         if (start === -1 || draft.indexOf(before, start + 1) !== -1) throw new Error('返工引句必须在改稿中唯一出现。');
-        return { start, end: start + before.length, after };
+        return { start, end: start + before.length, before, after };
     }).sort((a, b) => b.start - a.start);
     let text = draft;
     let boundary = draft.length;
@@ -95,19 +106,20 @@ function applyRepairs(draft, edits) {
         boundary = start;
     }
     if (!text.trim()) throw new Error('返工后正文为空。');
-    return { text, count: changes.length };
+    return { text, edits: changes.reverse().map(({ before, after }) => ({ before, after })) };
 }
 
-export function parseRevisionStage(stage, mode, result, narrative, draft) {
+export function parseRevisionStage(stage, mode, result, narrative, draft, results) {
     const text = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
     try {
         const data = JSON.parse(jsonCandidate(text));
         if (stage === 'repair') return applyRepairs(draft, data.edits);
         const validateQuote = value => {
             const quote = validateText(value, 360);
-            if (!narrative.includes(quote) && !((stage === 'audit' || stage === 'verify') && draft.includes(quote))) throw new Error('引文与原文不符。');
+            if (!narrative.includes(quote) && !(stage === 'audit' && draft.includes(quote))) throw new Error('引文与原文不符。');
             return quote;
         };
+        const validateIssue = issue => ({ quote: validateQuote(issue.quote), problem: validateText(issue.problem, 500) });
         if (stage === 'plan') {
             return {
                 opening: validateText(data.opening, 400),
@@ -121,10 +133,27 @@ export function parseRevisionStage(stage, mode, result, narrative, draft) {
                 })) : [],
             };
         }
-        const issues = validateList(data.issues, 0, 8, issue => ({
-            quote: validateQuote(issue.quote), problem: validateText(issue.problem, 500),
-        }));
-        if (stage === 'audit' || stage === 'verify') return { issues };
+        if (stage === 'verify') {
+            const auditIssues = results.audit.issues;
+            const ids = validateList(data.remaining, 0, auditIssues.length, id => {
+                if (!Number.isInteger(id) || id < 1 || id > auditIssues.length) throw new Error('终审问题编号无效。');
+                return id;
+            });
+            if (new Set(ids).size !== ids.length) throw new Error('终审问题编号重复。');
+            const remaining = ids.map(id => auditIssues[id - 1]);
+            const introduced = validateList(data.introduced, 0, 8, issue => {
+                const edit = Number.isInteger(issue.edit) && results.repair.edits[issue.edit - 1];
+                const quote = validateText(issue.quote, 360);
+                if (!edit || (!edit.before.includes(quote) && !edit.after.includes(quote))) {
+                    throw new Error('新增问题的引文与所指的返工片段不符。');
+                }
+                return { quote, problem: validateText(issue.problem, 500) };
+            });
+            const fixed = auditIssues.length - remaining.length;
+            return { remaining, introduced, fixed, accepted: fixed > 0 && introduced.length === 0 };
+        }
+        const issues = validateList(data.issues, 0, 8, validateIssue);
+        if (stage === 'audit') return { issues };
         return { facts: validateList(data.facts, 0, 12, item => validateText(item, 400)), issues };
     } catch (error) {
         const hint = error instanceof SyntaxError ? '' : error.message;

@@ -73,14 +73,39 @@ test('only a concrete audit finding starts repairs, and only an actual repair is
     const repair = parseRevisionStage('repair', 'preserve', reply({ edits: [
         { before: '她打了电话。', after: quote },
     ] }), request.narrative, write);
-    assert.deepEqual(repair, { text: quote + '\n\n她拉开窗帘。', count: 1 });
+    assert.deepEqual(repair, {
+        text: quote + '\n\n她拉开窗帘。',
+        edits: [{ before: '她打了电话。', after: quote }],
+    });
     assert.equal(revisionStageNeeded('verify', { repair }), true);
     const prompt = buildRevisionStage('verify', 'preserve', request, { write, audit, repair }, [], source.polishExample);
     assert.match(prompt[1].content, /<revised_draft>\n> 她差点拨出去。/);
-    assert.match(prompt[1].content, /<audit_issues>[\s\S]+未遂改成了已完成/);
+    assert.match(prompt[1].content, /<audit_issues>[\s\S]+"id":1,[\s\S]+未遂改成了已完成/);
+    assert.match(prompt[1].content, /<applied_edits>\n> \[{"id":1,"before":"她打了电话。","after":"她差点拨出去。"}\]/);
     assert.match(prompt[1].content, /<style_sample>/);
-    const residual = { issues: [{ quote: '她拉开窗帘。', problem: '加了额外动作。' }] };
-    assert.deepEqual(parseRevisionStage('verify', 'preserve', reply(residual), request.narrative, repair.text), residual);
+});
+
+test('partly successful repairs pass when they introduce no regressions', () => {
+    const write = '她打了电话。她拉开窗帘。';
+    const wrongCall = { quote: '她打了电话。', problem: '把未遂写成了已完成。' };
+    const extraAction = { quote: '她拉开窗帘。', problem: '加了额外动作。' };
+    const audit = { issues: [wrongCall, extraAction] };
+    const repair = { text: quote + extraAction.quote, edits: [{ before: wrongCall.quote, after: quote }] };
+    const verify = data => parseRevisionStage('verify', 'preserve', reply(data), request.narrative, write, { audit, repair });
+
+    assert.deepEqual(verify({ remaining: [2], introduced: [] }), {
+        remaining: [extraAction], introduced: [], fixed: 1, accepted: true,
+    });
+    assert.equal(verify({ remaining: [], introduced: [] }).accepted, true);
+    assert.equal(verify({ remaining: [1, 2], introduced: [] }).accepted, false);
+    assert.throws(() => verify({ remaining: [1, 1], introduced: [] }), /编号重复/);
+    assert.throws(() => verify({ remaining: [3], introduced: [] }), /编号无效/);
+    assert.throws(() => verify({ remaining: [], introduced: [{ edit: 1, ...extraAction }] }), /引文与所指的返工片段不符/);
+
+    const introduced = { quote: wrongCall.quote, problem: '返工删去了必须保留的台词。' };
+    assert.deepEqual(verify({ remaining: [2], introduced: [{ edit: 1, ...introduced }] }), {
+        remaining: [extraAction], introduced: [introduced], fixed: 1, accepted: false,
+    });
 });
 
 test('patches use exact, unique, non-overlapping anchors in the original candidate', () => {
@@ -92,8 +117,9 @@ test('patches use exact, unique, non-overlapping anchors in the original candida
         { before: '开门。关窗', after: '站住。' },
         { before: '关窗。', after: '合窗。' },
     ]), /重叠/);
-    assert.deepEqual(parse([
+    const edits = [
         { before: '开门。关窗', after: '开门。等雨' },
         { before: '。开门。', after: '。坐下。' },
-    ]), { text: '开门。等雨。坐下。', count: 2 });
+    ];
+    assert.deepEqual(parse(edits.toReversed()), { text: '开门。等雨。坐下。', edits });
 });
