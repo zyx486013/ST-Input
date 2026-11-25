@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getChatMessages } from '../prompts.js';
 import { prepareReplyPolish } from '../reply-polish.js';
-import { approvedChanges, buildRevisionStage, parseRevisionStage, revisionStages } from '../revision-team.js';
+import { approvedChanges, buildRevisionStage, parseRevisionStage, revisionStageNeeded, revisionStages } from '../revision-team.js';
 
 const source = {
     history: getChatMessages([{ mes: '她差点拨出去。她又复述了接线员的回答。\n\n<StatusBlock>精力=10</StatusBlock>' }]),
@@ -21,7 +21,7 @@ const plan = { opening: '从她对通话的复述切入。', beats: ['电话与�
 test('routes the stages and requires exact evidence from the regex-processed draft', () => {
     assert.deepEqual(revisionStages('review', true), ['review']);
     assert.deepEqual(revisionStages('preserve', false), ['review', 'plan', 'write']);
-    assert.deepEqual(revisionStages('adjust', true), ['review', 'plan', 'write', 'audit']);
+    assert.deepEqual(revisionStages('adjust', true), ['review', 'plan', 'write', 'audit', 'repair', 'verify']);
     assert.deepEqual(parseRevisionStage('review', 'review', reply(review), request.narrative), review);
     assert.throws(() => parseRevisionStage('review', 'review', reply({ ...review, issues: [{ ...review.issues[0], quote: '原稿没有这句话' }] }), request.narrative), /引文与原文不符/);
     assert.throws(() => parseRevisionStage('review', 'review', { text: '{}', finishReason: 'length' }, request.narrative), /输出长度上限/);
@@ -52,4 +52,48 @@ test('final review accepts evidence from either draft and receives only confirme
     assert.match(prompt[1].content, /<approved_changes>\n> \[\]\n<\/approved_changes>/);
     assert.match(prompt[1].content, /<revised_draft>\n> 她打了电话/);
     assert.deepEqual(parseRevisionStage('audit', 'preserve', reply(issues), request.narrative, write), issues);
+});
+
+test('a clean review sends the draft straight to the style editor', () => {
+    assert.equal(revisionStageNeeded('plan', { review }), true);
+    assert.equal(revisionStageNeeded('plan', { review: { ...review, issues: [] } }), false);
+    const { prompt } = prepareReplyPolish({ ...source, teamPlan: { approved: [], materials: request.revisionMaterials } });
+    assert.match(prompt[0].content, /无场记时按原稿组织/);
+    assert.doesNotMatch(prompt[1].content, /<revision_plan>|undefined/);
+    assert.match(prompt[1].content, /<approved_changes>/);
+});
+
+test('only a concrete audit finding starts repairs, and only an actual repair is reviewed', () => {
+    const write = '她打了电话。\n\n她拉开窗帘。';
+    const audit = { issues: [{ quote: '她打了电话。', problem: '把原稿的未遂改成了已完成。' }] };
+    assert.equal(revisionStageNeeded('repair', { audit: { issues: [] } }), false);
+    assert.equal(revisionStageNeeded('repair', { audit }), true);
+    const empty = parseRevisionStage('repair', 'preserve', reply({ edits: [] }), request.narrative, write);
+    assert.equal(revisionStageNeeded('verify', { repair: empty }), false);
+    const repair = parseRevisionStage('repair', 'preserve', reply({ edits: [
+        { before: '她打了电话。', after: quote },
+    ] }), request.narrative, write);
+    assert.deepEqual(repair, { text: quote + '\n\n她拉开窗帘。', count: 1 });
+    assert.equal(revisionStageNeeded('verify', { repair }), true);
+    const prompt = buildRevisionStage('verify', 'preserve', request, { write, audit, repair }, [], source.polishExample);
+    assert.match(prompt[1].content, /<revised_draft>\n> 她差点拨出去。/);
+    assert.match(prompt[1].content, /<audit_issues>[\s\S]+未遂改成了已完成/);
+    assert.match(prompt[1].content, /<style_sample>/);
+    const residual = { issues: [{ quote: '她拉开窗帘。', problem: '加了额外动作。' }] };
+    assert.deepEqual(parseRevisionStage('verify', 'preserve', reply(residual), request.narrative, repair.text), residual);
+});
+
+test('patches use exact, unique, non-overlapping anchors in the original candidate', () => {
+    const draft = '开门。关窗。开门。';
+    const parse = edits => parseRevisionStage('repair', 'preserve', reply({ edits }), request.narrative, draft);
+    assert.throws(() => parse([{ before: '开门。', after: '' }]), /唯一出现/);
+    assert.throws(() => parse([{ before: '回头。', after: '' }]), /唯一出现/);
+    assert.throws(() => parse([
+        { before: '开门。关窗', after: '站住。' },
+        { before: '关窗。', after: '合窗。' },
+    ]), /重叠/);
+    assert.deepEqual(parse([
+        { before: '开门。关窗', after: '开门。等雨' },
+        { before: '。开门。', after: '。坐下。' },
+    ]), { text: '开门。等雨。坐下。', count: 2 });
 });

@@ -5,7 +5,7 @@ import { createGenerationParameters, getStreamingReply, proxies } from '/scripts
 import { completeWithSillyTavern } from './connections.js';
 import { TIMEOUT_524_MESSAGE } from './polish-stream.js';
 import { restoreRevisionComponents } from './revision-components.js';
-import { approvedChanges, buildRevisionStage, parseRevisionStage, REVISION_ROLES, revisionStages } from './revision-team.js';
+import { approvedChanges, buildRevisionStage, parseRevisionStage, REVISION_ROLES, revisionStageNeeded, revisionStages } from './revision-team.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
 import { MAX_POLISH_OUTPUT_TOKENS, MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
@@ -165,19 +165,18 @@ function mount() {
                     </div>
                     <div class="st-input-actions">
                         <button class="menu_button st-input-primary" type="button" data-st="polish-generate">开始精修</button>
-                        <button class="menu_button" type="button" data-st="team-toggle" aria-controls="st-input-team" aria-expanded="false" hidden>多角色大修</button>
+                        <button class="menu_button" type="button" data-st="team-toggle" aria-controls="st-input-team" aria-expanded="false" hidden>大修设置与记录</button>
                         <button class="menu_button" type="button" data-st="polish-undo" hidden>恢复原回复</button>
                     </div>
                     <div id="st-input-team" class="st-input-config" data-st="team" hidden>
                         <fieldset class="st-input-style-mode" data-st="team-controls">
-                            <legend>多角色大修</legend>
+                            <legend>大修设置</legend>
                             <label>任务<select class="text_pole" data-st="team-mode">
                                 <option value="preserve">守剧情大修</option>
                                 <option value="review">只查漏洞</option>
                                 <option value="adjust">允许剧情调整</option>
                             </select></label>
-                            <label><input type="checkbox" data-st="team-audit">成稿后终审</label>
-                            <button class="menu_button" type="button" data-st="team-start">开始多角色大修</button>
+                            <label><input type="checkbox" data-st="team-audit" checked>终审并按需返工</label>
                         </fieldset>
                         <div class="st-input-config" data-st="team-results" aria-label="多角色编辑记录"></div>
                     </div>
@@ -294,27 +293,6 @@ function mount() {
         reasoningFrame = requestAnimationFrame(() => {
             reasoningText.value = text;
         });
-    }
-
-    const outlinePreview = element('details', null, 'st-input-config');
-    outlinePreview.hidden = true;
-    const outlineText = element('textarea', null, 'text_pole st-input-draft');
-    outlineText.setAttribute('aria-label', '重排场记内容');
-    outlineText.readOnly = true;
-    outlineText.rows = 5;
-    outlinePreview.append(element('summary', '重排场记 · 本次大修'), outlineText);
-    outputs.get(POLISH_MODE).result.before(outlinePreview);
-
-    function clearOutlinePreview() {
-        outlineText.value = '';
-        outlinePreview.open = false;
-        outlinePreview.hidden = true;
-    }
-
-    function previewOutline(text) {
-        if (!text || outlineText.value === text) return;
-        outlineText.value = text;
-        outlinePreview.hidden = false;
     }
 
     const streamPreview = element('details', null, 'st-input-config');
@@ -483,11 +461,13 @@ function mount() {
         ui.review.disabled = busy;
         ui['polish-method'].disabled = busy;
         ui['polish-stream'].disabled = busy;
-        ui['polish-generate'].disabled = busy || (ui['with-example'].checked && !ui['polish-example'].value.trim());
+        const rewrite = ui['polish-rewrite'].checked;
+        const reviewOnly = rewrite && ui['team-mode'].value === 'review';
+        ui['polish-generate'].textContent = reviewOnly ? '开始审校' : rewrite ? '开始大修' : '开始精修';
+        ui['polish-generate'].disabled = busy || (!reviewOnly && ui['with-example'].checked && !ui['polish-example'].value.trim());
         ui['team-controls'].disabled = busy;
         ui['team-toggle'].disabled = busy;
         ui['team-audit'].disabled = ui['team-mode'].value === 'review';
-        ui['team-start'].disabled = ui['team-mode'].value !== 'review' && ui['with-example'].checked && !ui['polish-example'].value.trim();
         for (const control of ui['team-results'].querySelectorAll('button, select')) control.disabled = busy;
         ui['polish-undo'].disabled = busy;
         const apply = output().result.querySelector('[data-polish-apply]');
@@ -505,7 +485,6 @@ function mount() {
             clearTeam();
             clearStreamPreview();
             clearReasoningPreview();
-            clearOutlinePreview();
             comparison = undefined;
             for (const { status, result } of outputs.values()) {
                 result.replaceChildren();
@@ -556,9 +535,17 @@ function mount() {
         if (!ui.preview.open) return;
         try {
             const mode = ui['preview-mode'].value;
-            const prompt = lastPrompt?.mode === mode && lastPrompt.draft === textarea.value
-                ? lastPrompt.messages : buildRequest(getSource(mode)).prompt;
-            showPrompt(prompt);
+            if (lastPrompt?.mode === mode && lastPrompt.draft === textarea.value) {
+                showPrompt(lastPrompt.messages);
+                return;
+            }
+            const source = getSource(mode);
+            if (source.rewrite) {
+                const request = prepareReplyPolish({ ...source, polishExample: '' });
+                showPrompt(buildRevisionStage('review', ui['team-mode'].value, request, {}, []));
+            } else {
+                showPrompt(buildRequest(source).prompt);
+            }
         } catch (error) {
             ui['preview-content'].textContent = error.message;
         }
@@ -684,6 +671,10 @@ function mount() {
     }
 
     function startPolish() {
+        if (ui['polish-rewrite'].checked) {
+            startTeam();
+            return;
+        }
         const source = readPolishSource();
         if (source) {
             ui['preview-mode'].value = POLISH_MODE;
@@ -731,7 +722,6 @@ function mount() {
             clearTeam();
             clearStreamPreview();
             clearReasoningPreview();
-            clearOutlinePreview();
         } else {
             output().result.replaceChildren();
         }
@@ -751,19 +741,11 @@ function mount() {
             const signal = pending.controller.signal;
             const result = polish ? await requestPolish(prompt, source, target, signal, {
                 onText: text => {
-                    if (currentRevision !== revision || signal.aborted) return;
-                    if (!source.rewrite) {
-                        previewStreamText(text);
-                        return;
-                    }
-                    const { outline, prose } = splitDeepRevisionOutput(text, true);
-                    if (outline && outlinePreview.hidden) setStatus('正在接收重排场记…');
-                    previewOutline(outline);
-                    if (prose.trim()) previewStreamText(prose);
+                    if (currentRevision === revision && !signal.aborted) previewStreamText(text);
                 },
                 onReasoning: text => {
                     if (currentRevision !== revision || signal.aborted) return;
-                    if (reasoningPreview.hidden && outlinePreview.hidden && streamPreview.hidden && text.trim()) {
+                    if (reasoningPreview.hidden && streamPreview.hidden && text.trim()) {
                         setStatus('正在接收模型思考…');
                     }
                     previewReasoning(text);
@@ -773,14 +755,7 @@ function mount() {
             if (polish) {
                 checkPolishSource(snapshot);
                 previewReasoning(result.reasoning);
-                let prose = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
-                if (source.rewrite) {
-                    const revised = splitDeepRevisionOutput(prose);
-                    previewOutline(revised.outline);
-                    if (!revised.prose.trim()) throw new Error('模型只返回了重排场记。请重新生成完整的大修正文。');
-                    prose = revised.prose;
-                }
-                const text = restoreRevisionComponents(prose, snapshot.revisionComponents);
+                const text = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
                 clearStreamPreview();
                 showPolishedVersion(snapshot, source, text);
                 return;
@@ -823,12 +798,14 @@ function mount() {
             node.append(...items.map(item => element('li', item)));
             return node;
         }
-        for (const [index, stage] of team.stages.entries()) {
+        for (const stage of team.stages) {
             const result = team.results[stage];
+            if ((stage === 'repair' || stage === 'verify') && !revisionStageNeeded(stage, team.results)) continue;
+            const skipped = stage === 'plan' && team.results.review && !revisionStageNeeded(stage, team.results);
             const details = element('details');
             details.dataset.role = stage;
             details.open = expanded.has(stage);
-            const status = team.active === stage ? '进行中' : team.retry === stage ? '待重试' : result ? '完成' : '等待';
+            const status = team.active === stage ? '进行中' : team.retry === stage ? '待重试' : result ? '完成' : skipped ? '已跳过' : '等待';
             details.append(element('summary', `${REVISION_ROLES[stage]} · ${status}`));
             const body = element('div', null, 'st-input-config st-input-team-record');
             if (result?.facts) body.append(element('strong', '原稿事实'), list(result.facts));
@@ -840,11 +817,18 @@ function mount() {
                 body.append(element('strong', '开场切入点'), element('p', result.opening), list(result.beats));
                 if (team.approved.length) body.append(element('strong', '已选剧情调整'), list(team.approved.map(option => option.change)));
             }
+            if (skipped) body.append(element('p', '审校没有发现需要剧情编辑的问题。'));
             if (stage === 'write' && result) body.append(element('p', '完整稿在下方对比区。可更换范文后重跑文风编辑。'));
-            if (team.retry === stage) body.append(button(`继续${REVISION_ROLES[stage]}`, () => void runTeam(stage, undefined, team.retrySingle)));
-            else if (result) body.append(button(`重跑${REVISION_ROLES[stage]}`, () => void runTeam(stage, undefined, true)));
-            else if (!team.awaitingApproval && team.results[team.stages[index - 1]]) {
-                body.append(button(`运行${REVISION_ROLES[stage]}`, () => void runTeam(stage)));
+            if (stage === 'repair' && result) {
+                body.append(element('p', result.count ? `提出 ${result.count} 处局部修改。` : '没有找到可落实的局部修改。'));
+            }
+            if (team.retry === stage) {
+                body.append(button(`继续${REVISION_ROLES[stage]}`, () => void runTeam(stage, undefined, team.retrySingle)));
+            } else if (stage !== 'repair' && stage !== 'verify') {
+                if (result) body.append(button(`重跑${REVISION_ROLES[stage]}`, () => void runTeam(stage, undefined, stage !== 'audit')));
+                else if (!team.awaitingApproval && canRunTeamStage(stage)) {
+                    body.append(button(`运行${REVISION_ROLES[stage]}`, () => void runTeam(stage)));
+                }
             }
             details.append(body);
             area.append(details);
@@ -872,6 +856,14 @@ function mount() {
         }
     }
 
+    function canRunTeamStage(stage) {
+        const { review, plan, write } = team.results;
+        if (stage === 'plan') return revisionStageNeeded(stage, team.results);
+        if (stage === 'write') return review && (plan || !revisionStageNeeded('plan', team.results));
+        if (stage === 'audit') return Boolean(write);
+        return false;
+    }
+
     function startTeam() {
         if (pending || writingReply) return;
         const mode = ui['team-mode'].value;
@@ -887,6 +879,7 @@ function mount() {
                 mode, stages: revisionStages(mode, ui['team-audit'].checked), request, snapshot, notes: source.polishNotes,
                 results: {}, selected: [], approved: [],
             };
+            showTeamControls(true);
             void runTeam('review', source);
         } catch (error) {
             setStatus(error.message);
@@ -895,7 +888,9 @@ function mount() {
 
     async function runTeam(first, source, single = false) {
         if (!team || pending || writingReply) return;
-        source ??= readPolishSource(team.mode === 'review' || first === 'audit' || (single && first !== 'write'));
+        const affected = team.stages.slice(team.stages.indexOf(first));
+        const stages = single ? [first] : affected;
+        source ??= readPolishSource(!stages.includes('write'));
         if (!source) return;
         const job = team;
         try {
@@ -910,8 +905,6 @@ function mount() {
             job.approved = approvedChanges(job.results.plan.choices, job.selected);
             job.awaitingApproval = false;
         }
-        const affected = job.stages.slice(job.stages.indexOf(first));
-        const stages = single ? [first] : affected;
         for (const stage of affected) delete job.results[stage];
         if (affected.includes('plan')) {
             job.awaitingApproval = false;
@@ -925,23 +918,24 @@ function mount() {
         const signal = pending.controller.signal;
         const isCurrent = () => currentRevision === revision && !signal.aborted;
         clearStreamPreview();
-        clearOutlinePreview();
         ui['preview-mode'].value = POLISH_MODE;
         try {
             for (const stage of stages) {
+                if (!revisionStageNeeded(stage, job.results)) continue;
                 job.active = stage;
                 clearReasoningPreview();
                 renderTeam();
                 updateBusy();
                 setStatus(`正在进行${REVISION_ROLES[stage]}…`);
                 const writing = stage === 'write';
+                const { plan } = job.results;
                 const prompt = writing ? prepareReplyPolish({
                     ...source, rewrite: true, teamPlan: {
                         materials: job.request.revisionMaterials,
-                        outline: { opening: job.results.plan.opening, beats: job.results.plan.beats },
+                        outline: plan && { opening: plan.opening, beats: plan.beats },
                         approved: job.approved,
                     },
-                }).prompt : buildRevisionStage(stage, job.mode, job.request, job.results, job.approved);
+                }).prompt : buildRevisionStage(stage, job.mode, job.request, job.results, job.approved, job.writeSource?.polishExample);
                 lastPrompt = { mode: POLISH_MODE, draft: source.draft, messages: prompt };
                 showPrompt(prompt);
                 const result = await requestPolish(prompt, source, job.snapshot, signal, {
@@ -959,14 +953,14 @@ function mount() {
                 if (writing) {
                     const { prose } = splitDeepRevisionOutput(parsePolishedReply(result.text, result.finishReason, result.outputTokens));
                     if (!prose.trim()) throw new Error('模型未返回完整正文。');
-                    const text = restoreRevisionComponents(prose, job.snapshot.revisionComponents);
-                    job.results.write = prose;
-                    clearStreamPreview();
-                    showPolishedVersion(job.snapshot, { ...source, rewrite: true }, text, true);
+                    job.writeSource = { polishExample: source.polishExample, polishNotes: job.notes, rewrite: true };
+                    showTeamDraft(prose);
                     continue;
                 }
-                const record = parseRevisionStage(stage, job.mode, result, job.request.narrative, job.results.write);
+                const candidate = stage === 'verify' ? job.results.repair.text : job.results.write;
+                const record = parseRevisionStage(stage, job.mode, result, job.request.narrative, candidate);
                 job.results[stage] = record;
+                if (stage === 'verify' && !record.issues.length) showTeamDraft(candidate);
                 if (stage === 'plan' && record.choices.length) {
                     job.awaitingApproval = true;
                     setStatus('请选择剧情方案，再生成正文。');
@@ -975,9 +969,11 @@ function mount() {
             }
             if (stages.at(-1) === 'review') setStatus('剧情审校已完成。');
             if (stages.at(-1) === 'plan') setStatus('剧情编辑已完成。');
-            if (job.results.audit) {
-                const count = job.results.audit.issues.length;
-                setStatus(count ? `终审列出 ${count} 处问题，请展开查看。` : '终审完成，本次未发现明确问题。');
+            const { audit, verify } = job.results;
+            if (verify) {
+                setStatus(verify.issues.length ? '复核仍有问题，已保留返工前的大修稿。' : '局部返工通过复核，大修稿已更新。');
+            } else if (audit) {
+                setStatus(audit.issues.length ? '终审发现问题，已保留返工前的大修稿。' : '终审完成，本次未发现明确问题。');
             }
         } catch (error) {
             if (isCurrent()) {
@@ -990,6 +986,13 @@ function mount() {
             pending = undefined;
             renderTeam();
             updateBusy();
+        }
+
+        function showTeamDraft(prose) {
+            const text = restoreRevisionComponents(prose, job.snapshot.revisionComponents);
+            job.results.write = prose;
+            clearStreamPreview();
+            showPolishedVersion(job.snapshot, job.writeSource, text, true);
         }
     }
 
@@ -1465,16 +1468,13 @@ function mount() {
         const rewrite = ui['polish-rewrite'].checked;
         config.polishRewrite = rewrite;
         saveSettings();
-        ui['polish-generate'].textContent = rewrite ? '开始大修' : '开始精修';
         ui['team-toggle'].hidden = !rewrite;
         if (!rewrite) showTeamControls(false);
         refreshPolishExamplePreview();
     });
     ui['team-toggle'].hidden = !ui['polish-rewrite'].checked;
-    if (ui['polish-rewrite'].checked) ui['polish-generate'].textContent = '开始大修';
     ui['team-toggle'].addEventListener('click', () => showTeamControls(ui.team.hidden));
-    ui['team-mode'].addEventListener('change', updateBusy);
-    ui['team-start'].addEventListener('click', startTeam);
+    ui['team-mode'].addEventListener('change', refreshPolishExamplePreview);
     ui['polish-generate'].addEventListener('click', startPolish);
     ui['polish-undo'].addEventListener('click', () => {
         if (undoReply) void changeReply(undoReply.target, undoReply.target.rawText, undoReply.applied, true);

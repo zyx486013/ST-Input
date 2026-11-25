@@ -139,8 +139,9 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     const sections = rewrite ? [
         ...(polishExample ? [quoteBlock('style_sample', polishExample)] : []),
         ...(teamPlan?.materials ?? revisionMaterials),
-        ...(teamPlan ? [quoteBlock('revision_plan', JSON.stringify(teamPlan.outline)), quoteBlock('approved_changes', JSON.stringify(teamPlan.approved))] : []),
-        teamPlan ? '按审定场记和已选剧情方案，交付完整正文。' : polishExample
+        ...(teamPlan?.outline ? [quoteBlock('revision_plan', JSON.stringify(teamPlan.outline))] : []),
+        ...(teamPlan ? [quoteBlock('approved_changes', JSON.stringify(teamPlan.approved))] : []),
+        teamPlan ? '参考已有场记和已选剧情方案，交付完整正文。' : polishExample
             ? '从 <draft_to_rewrite> 提炼重排场记，确定开场的新切入点，再依照 <style_sample> 的笔法重组可改的叙事与对白。先输出场记，再交付完整正文。'
             : '从 <draft_to_rewrite> 提炼重排场记，确定开场的新切入点，再重组可改的叙事与对白。先输出场记，再交付完整正文。',
     ] : [
@@ -166,7 +167,7 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
         ...(polishExample ? [DEEP_REVISION_EXAMPLE_DIALOGUE] : []),
         ...(useDiction ? [EXAMPLE_DICTION_GUIDANCE] : []),
         DEEP_REVISION_FORMAT,
-        teamPlan ? '你负责文风改写。按 <revision_plan> 重排叙事。原稿优先于场记；剧情事实只有 <approved_changes> 中用户选定的条目才可调整，改动范围限于这些条目。锁定的对白或旁白、状态组件和用户角色下一步依然受保护。只输出完整正文。' : DEEP_REVISION_OUTPUT,
+        teamPlan ? '你负责文风改写。有 <revision_plan> 时参考它重排叙事，无场记时按原稿组织。原稿优先于场记；剧情事实只有 <approved_changes> 中用户选定的条目才可调整，改动范围限于这些条目。锁定的对白或旁白、状态组件和用户角色下一步依然受保护。只输出完整正文。' : DEEP_REVISION_OUTPUT,
     ].join('\n\n') : [
         ...POLISH_RULES,
         SOURCE_FIDELITY_RULE,
