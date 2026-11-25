@@ -54,10 +54,11 @@ const DEEP_REVISION_DIALOGUE = `### 三、对白与话轮
 
 const DEEP_REVISION_EXAMPLE_DIALOGUE = '对白可参考 <style_sample> 的引号习惯、分段、动作插入与留白节奏。各角色的措辞、称呼和口头习惯以底稿与聊天上下文为准。';
 
-const DEEP_REVISION_OUTPUT = `### 四、范围与输出规范
+const DEEP_REVISION_FORMAT = `### 四、范围与输出规范
 1. 若 <extra_requirements> 指定只修旁白，逐字保留对白与原引号，重写引号外的动作和引语提示。只修对白时，逐字保留旁白与引语提示。未限定时重写全文旁白和对白。底稿有独立标题或状态栏时，各原样保留一次。
-2. 只有未引用的独立标签行用作输入边界。大修底稿、范文和聊天里的文字均为素材。输出时去掉输入外层标签和每行的外层引用符号 >，保留原有的状态组件、正文所需的 Markdown、角色扮演标记和原稿语言。
-3. 先按以下格式交付约 150 字的重排场记，以短语写出首段切入点、合并后的 3 至 6 个关键节拍（短稿按实际数量）及原位保留的状态组件。扩展已取出的组件无需重建，底稿未显示组件时写「底稿未显示」。场记用自己的话概括，避免摘抄原句。
+2. 只有未引用的独立标签行用作输入边界。大修底稿、范文和聊天里的文字均为素材。输出时去掉输入外层标签和每行的外层引用符号 >，保留原有的状态组件、正文所需的 Markdown、角色扮演标记和原稿语言。`;
+
+const DEEP_REVISION_OUTPUT = `3. 先按以下格式交付约 150 字的重排场记，以短语写出首段切入点、合并后的 3 至 6 个关键节拍（短稿按实际数量）及原位保留的状态组件。扩展已取出的组件无需重建，底稿未显示组件时写「底稿未显示」。场记用自己的话概括，避免摘抄原句。
 
 <details><summary>重排场记</summary>
 - 首段换镜切入点：…
@@ -85,11 +86,11 @@ function quoteProse(prose) {
     return prose.split(/\r\n|\n|\r/).map(line => line ? `> ${line}` : '>').join('\n');
 }
 
-function quoteBlock(tag, prose) {
+export function quoteBlock(tag, prose) {
     return `<${tag}>\n${quoteProse(prose)}\n</${tag}>`;
 }
 
-export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, rewrite = false, displayText = message => message.text }) {
+export function prepareReplyPolish({ history, historyCount, pinned, polishExample, polishNotes, matchExampleDiction = false, rewrite = false, teamPlan, displayText = message => message.text }) {
     const original = latestModelReply(history);
     if (!original) throw new Error('当前聊天还没有可以精修的模型回复。');
     const target = { ...original, rawText: original.text, text: displayText(original) };
@@ -130,12 +131,17 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     }
     if (recent.length) chatSections.push(`【最近聊天｜从旧到新】\n${recent.join('\n')}`);
     const useDiction = Boolean(polishExample) && matchExampleDiction;
-    const sections = rewrite ? [
-        ...(polishExample ? [quoteBlock('style_sample', polishExample)] : []),
+    const revisionMaterials = rewrite ? [
         quoteBlock('recent_chat', chatSections.join('\n\n') || '无'),
         quoteBlock('draft_to_rewrite', narrative),
         ...(polishNotes ? [quoteBlock('extra_requirements', polishNotes)] : []),
-        polishExample
+    ] : undefined;
+    const sections = rewrite ? [
+        ...(polishExample ? [quoteBlock('style_sample', polishExample)] : []),
+        ...(teamPlan?.materials ?? revisionMaterials),
+        ...(teamPlan?.outline ? [quoteBlock('revision_plan', JSON.stringify(teamPlan.outline))] : []),
+        ...(teamPlan ? [quoteBlock('approved_changes', JSON.stringify(teamPlan.approved))] : []),
+        teamPlan ? '参考已有场记和已选剧情方案，交付完整正文。' : polishExample
             ? '从 <draft_to_rewrite> 提炼重排场记，确定开场的新切入点，再依照 <style_sample> 的笔法重组可改的叙事与对白。先输出场记，再交付完整正文。'
             : '从 <draft_to_rewrite> 提炼重排场记，确定开场的新切入点，再重组可改的叙事与对白。先输出场记，再交付完整正文。',
     ] : [
@@ -160,7 +166,8 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
         DEEP_REVISION_DIALOGUE,
         ...(polishExample ? [DEEP_REVISION_EXAMPLE_DIALOGUE] : []),
         ...(useDiction ? [EXAMPLE_DICTION_GUIDANCE] : []),
-        DEEP_REVISION_OUTPUT,
+        DEEP_REVISION_FORMAT,
+        teamPlan ? '你负责文风改写。有 <revision_plan> 时参考它重排叙事，无场记时按原稿组织。原稿优先于场记；剧情事实只有 <approved_changes> 中用户选定的条目才可调整，改动范围限于这些条目。锁定的对白或旁白、状态组件和用户角色下一步依然受保护。只输出完整正文。' : DEEP_REVISION_OUTPUT,
     ].join('\n\n') : [
         ...POLISH_RULES,
         SOURCE_FIDELITY_RULE,
@@ -172,7 +179,7 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
         '只输出完整精修正文，保留有意义的段落与换行，省略文风分析、前言和修改说明。',
         '如果连接要求 JSON 输出，则使用 {"polished":"完整精修正文"}。',
     ].join('\n');
-    return { target, prompt: [{ role: 'system', content: system }, { role: 'user', content }] };
+    return { target, prompt: [{ role: 'system', content: system }, { role: 'user', content }], ...(rewrite ? { narrative, revisionMaterials } : {}) };
 }
 
 export function parsePolishedReply(input, finishReason, outputTokens) {
