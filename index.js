@@ -4,6 +4,7 @@ import { createRawPrompt } from '/script.js';
 import { createGenerationParameters, getStreamingReply, proxies } from '/scripts/openai.js';
 import { completeWithSillyTavern } from './connections.js';
 import { TIMEOUT_524_MESSAGE } from './polish-stream.js';
+import { restoreRevisionComponents } from './revision-components.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
 import { MAX_POLISH_OUTPUT_TOKENS, MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
@@ -702,7 +703,8 @@ function mount() {
             if (polish) {
                 checkPolishSource(snapshot);
                 previewReasoning(result.reasoning);
-                const text = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
+                const prose = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
+                const text = restoreRevisionComponents(prose, snapshot.revisionComponents);
                 clearStreamPreview();
                 showPolishedVersion(snapshot, source, text);
                 return;
