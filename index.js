@@ -8,7 +8,7 @@ import { restoreRevisionComponents } from './revision-components.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
 import { MAX_POLISH_OUTPUT_TOKENS, MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
-import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
+import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, splitDeepRevisionOutput, writePolishedReply } from './reply-polish.js';
 
 const KEY = 'st-input';
 const SERVICE = '/api/plugins/st-input';
@@ -280,6 +280,27 @@ function mount() {
         });
     }
 
+    const outlinePreview = element('details', null, 'st-input-config');
+    outlinePreview.hidden = true;
+    const outlineText = element('textarea', null, 'text_pole st-input-draft');
+    outlineText.setAttribute('aria-label', '重排场记内容');
+    outlineText.readOnly = true;
+    outlineText.rows = 5;
+    outlinePreview.append(element('summary', '重排场记 · 本次大修'), outlineText);
+    outputs.get(POLISH_MODE).result.before(outlinePreview);
+
+    function clearOutlinePreview() {
+        outlineText.value = '';
+        outlinePreview.open = false;
+        outlinePreview.hidden = true;
+    }
+
+    function previewOutline(text) {
+        if (!text || outlineText.value === text) return;
+        outlineText.value = text;
+        outlinePreview.hidden = false;
+    }
+
     const streamPreview = element('details', null, 'st-input-config');
     streamPreview.hidden = true;
     const streamTitle = element('summary', '流式预览');
@@ -462,6 +483,7 @@ function mount() {
         if (!keepComparison) {
             clearStreamPreview();
             clearReasoningPreview();
+            clearOutlinePreview();
             comparison = undefined;
             for (const { status, result } of outputs.values()) {
                 result.replaceChildren();
@@ -651,6 +673,7 @@ function mount() {
         if (polish) {
             clearStreamPreview();
             clearReasoningPreview();
+            clearOutlinePreview();
         } else {
             output().result.replaceChildren();
         }
@@ -689,11 +712,19 @@ function mount() {
                 yaml: SillyTavern.libs?.yaml,
                 chatCompletion: polish ? { ...chatCompletion, stream: useStream } : undefined,
                 onText: useStream ? text => {
-                    if (currentRevision === revision && !signal.aborted) previewStreamText(text);
+                    if (currentRevision !== revision || signal.aborted) return;
+                    if (!source.rewrite) {
+                        previewStreamText(text);
+                        return;
+                    }
+                    const { outline, prose } = splitDeepRevisionOutput(text, true);
+                    if (outline && outlinePreview.hidden) setStatus('正在接收重排场记…');
+                    previewOutline(outline);
+                    if (prose.trim()) previewStreamText(prose);
                 } : undefined,
                 onReasoning: useStream ? text => {
                     if (currentRevision !== revision || signal.aborted) return;
-                    if (reasoningPreview.hidden && streamPreview.hidden && text.trim()) {
+                    if (reasoningPreview.hidden && outlinePreview.hidden && streamPreview.hidden && text.trim()) {
                         setStatus('正在接收模型思考…');
                     }
                     previewReasoning(text);
@@ -703,7 +734,13 @@ function mount() {
             if (polish) {
                 checkPolishSource(snapshot);
                 previewReasoning(result.reasoning);
-                const prose = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
+                let prose = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
+                if (source.rewrite) {
+                    const revised = splitDeepRevisionOutput(prose);
+                    previewOutline(revised.outline);
+                    if (!revised.prose.trim()) throw new Error('模型只返回了重排场记。请重新生成完整的大修正文。');
+                    prose = revised.prose;
+                }
                 const text = restoreRevisionComponents(prose, snapshot.revisionComponents);
                 clearStreamPreview();
                 showPolishedVersion(snapshot, source, text);

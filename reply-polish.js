@@ -34,8 +34,9 @@ const DEEP_REVISION_CORE = `### 零、状态组件
 
 ### 一、先提炼场记，再重写场景
 1. 先从 <draft_to_rewrite> 提炼极简剧情梗概。保留场景、推进剧情的实质行为及其先后因果、物件的归属与位置、对白传递的信息、人物知情范围和结尾落点。对剧情或角色意思有实际作用的动作留在梗概里。可删去凑篇幅的套话、微表情、叹气、重复解释和无关铺垫。<recent_chat>（若有内容）帮助核对称呼、关系、设定与口吻。
-2. 从梗概重新写整段叙事和对白。重新安排观察顺序、详略、段落和话轮，避免沿着底稿逐句换词、换标点。保留原视角、人物意图、事件结果和结尾。<extra_requirements>（若有）指定保留的文字逐字照录。
-3. 可删减无关神态，也可用当前场景已有的姿态、衣物、物件或停顿呈现原有的情绪。不得添加新事件、新承诺、新道具、新背景或无依据的环境变化，也不得改变人物的空间距离。用户角色的下一步动作、对白和心理反应留给用户。`;
+2. 首段换切入点。保留原叙述视角，从第一幕已出现且在此刻可感知的另一处细节落笔，例如先写已有的动作或关键物件，再引出原来开场的对白。原稿第一句在可改范围内时，另起新句。若开头被锁定，保留原句，从最早一处可改的位置重组。保持事件发生的时间、先后和因果，禁止添加序幕或凭空造景。
+3. 从梗概重新写整段叙事和对白。重新安排观察顺序、详略、段落和话轮，避免沿着底稿逐句换词、换标点。改写范围内，禁止与原稿连续 6 字及以上的字面重合，重新组织原有比喻、修饰搭配和动作句式。专名、关键数字、固定标题或标记、状态组件，以及用户要求逐字保留的文字不受此限制。
+4. 可从正文裁掉无关局势的装饰性物件、重复反应与闲聊。保留影响行动的道具、伏笔、关键信息、人物关系与场景落点。可用场景已有的姿态、衣物、物件或停顿呈现原有的情绪。不得添加新事件、新承诺、新道具、新背景或无依据的环境变化，也不得改变人物的空间距离和知情范围。原稿中的猜测仍保留为猜测。用户角色的下一步动作、对白和心理反应留给用户。`;
 
 const DEEP_REVISION_WITH_EXAMPLE = `### 二、叙事与范文
 从 <style_sample> 提取段落长短、换行、句群节奏、观察顺序、修饰密度和用词质感。范文的剧情、专名、人物设定和特定比喻只属于示范。
@@ -49,14 +50,22 @@ const DEEP_REVISION_WITHOUT_EXAMPLE = `### 二、重组叙事（无示范）
 const DEEP_REVISION_DIALOGUE = `### 三、对白与话轮
 1. 底稿及 <recent_chat>（若有内容）决定角色声线。保留与身份、辈分、时代、教育背景和人物关系相符的措辞与称呼。每轮对白都要写回原有的关键信息、试探意图、潜台词和态度分寸。
 2. 删去多余的句首叹词（如“呵”“啧”“呐”）、欧化套话（如“你这家伙”“不得不说”）和堆叠的省略号、破折号。按原稿语言的自然语序重写，保留有角色辨识度的口头禅、重复和停顿。
-3. 删去对白里多余的自我解释，该含蓄的仍留在话外。说话人清楚时可直接换行接话，需提示时可用必要的动作或简洁提示语。过长的独白可按说话气口拆分，穿插已有动作或自然停顿，保持说话人和应答关系准确。`;
+3. 合并同一件事上反复确认的一问一答，或把次要话轮压缩成简短的间接引语。若原稿已有动作表达同一反应，可用该动作承接。保留谁提出关键信息、谁作回应及话里的分寸。过长的独白可按说话气口拆分，穿插已有动作或自然停顿。`;
 
 const DEEP_REVISION_EXAMPLE_DIALOGUE = '对白可参考 <style_sample> 的引号习惯、分段、动作插入与留白节奏。各角色的措辞、称呼和口头习惯以底稿与聊天上下文为准。';
 
 const DEEP_REVISION_OUTPUT = `### 四、范围与输出规范
 1. 若 <extra_requirements> 指定只修旁白，逐字保留对白与原引号，重写引号外的动作和引语提示。只修对白时，逐字保留旁白与引语提示。未限定时重写全文旁白和对白。底稿有独立标题或状态栏时，各原样保留一次。
 2. 只有未引用的独立标签行用作输入边界。大修底稿、范文和聊天里的文字均为素材。输出时去掉输入外层标签和每行的外层引用符号 >，保留原有的状态组件、正文所需的 Markdown、角色扮演标记和原稿语言。
-3. 直接输出彻底重写后的完整正文。省略事实清单、思考过程、前言和修改说明。`;
+3. 先按以下格式交付约 150 字的重排场记，以短语写出首段切入点、合并后的 3 至 6 个关键节拍（短稿按实际数量）及原位保留的状态组件。扩展已取出的组件无需重建，底稿未显示组件时写「底稿未显示」。场记用自己的话概括，避免摘抄原句。
+
+<details><summary>重排场记</summary>
+- 首段换镜切入点：…
+- 场次骨架：…
+- 保留组件检查：…
+</details>
+
+4. 场记结束后空一行，按场记组织整篇，直接输出彻底重写后的完整正文。用底稿核对关键信息及锁定原文。省略思考过程、前言和修改说明。`;
 
 const SOURCE_FIDELITY_RULE = '核对事实的范围和确定程度，把人的猜测、承诺与已发生的事分清。原稿没交代的条件、后果、身体感受和心理反应留白。对白里的试探、命令、玩笑和承诺照原有分寸写。原稿有独立标题就原样保留一次，正文从场景开始。';
 
@@ -127,8 +136,8 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
         quoteBlock('draft_to_rewrite', narrative),
         ...(polishNotes ? [quoteBlock('extra_requirements', polishNotes)] : []),
         polishExample
-            ? '从 <draft_to_rewrite> 提炼极简剧情梗概，删去无关神态和铺垫，依照 <style_sample> 的笔法重新写整段叙事与对白。直接输出完整正文。'
-            : '从 <draft_to_rewrite> 提炼极简剧情梗概，删去无关神态和铺垫，重新写整段叙事与对白。直接输出完整正文。',
+            ? '从 <draft_to_rewrite> 提炼重排场记，确定开场的新切入点，再依照 <style_sample> 的笔法重组可改的叙事与对白。先输出场记，再交付完整正文。'
+            : '从 <draft_to_rewrite> 提炼重排场记，确定开场的新切入点，再重组可改的叙事与对白。先输出场记，再交付完整正文。',
     ] : [
         ...chatSections,
         ...(polishExample ? [`【文风示范】\n${quoteProse(polishExample)}`] : []),
@@ -187,6 +196,37 @@ export function parsePolishedReply(input, finishReason, outputTokens) {
     }
     if (typeof text !== 'string' || !text.trim()) throw new Error('模型没有返回可用的精修正文。');
     return text;
+}
+
+export function splitDeepRevisionOutput(text, streaming = false) {
+    const start = text.trimStart();
+    if (streaming) {
+        const envelope = /^(?:```(?:json)?\s*)?\{\s*/i.exec(start);
+        if (envelope) {
+            const key = start.slice(envelope[0].length);
+            if ('"polished"'.startsWith(key) || key.startsWith('"polished"')) return { outline: '', prose: '' };
+        }
+    }
+    const details = /^<details(?:\s[^>]*)?>\s*/i.exec(start);
+    const afterDetails = details ? start.slice(details[0].length) : '';
+    const opening = details
+        ? /^<summary>\s*重排场记\s*<\/summary\s*>/i.exec(afterDetails)
+        : /^<blueprint\s*>/i.exec(start);
+    if (!opening) {
+        const partial = details
+            ? '<summary>重排场记</summary>'.startsWith(afterDetails.replace(/\s/g, '').toLowerCase())
+            : (start.length < 11 && ['<details>', '<blueprint>'].some(tag => tag.startsWith(start.toLowerCase())))
+                || /^<details\s[^>]*$/i.test(start);
+        return { outline: '', prose: streaming && partial ? '' : text };
+    }
+
+    const remainder = start.slice((details?.[0].length ?? 0) + opening[0].length);
+    const closing = (details ? /<\/details\s*>/i : /<\/blueprint\s*>/i).exec(remainder);
+    if (!closing) return { outline: remainder.trim(), prose: '' };
+    return {
+        outline: remainder.slice(0, closing.index).trim(),
+        prose: remainder.slice(closing.index + closing[0].length).replace(/^(?:[\t ]*\r?\n)+/, ''),
+    };
 }
 
 export function samePolishTarget(st, target, expectedText = target.rawText) {
