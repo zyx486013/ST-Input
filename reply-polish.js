@@ -1,5 +1,6 @@
 import { latestModelReply } from './logic-check.js';
 import { getChatMessages, jsonCandidate, serializeMessage } from './prompts.js';
+import { splitRevisionComponents } from './revision-components.js';
 import { MAX_POLISH_MESSAGE } from './server/polish-parameters.mjs';
 
 export const POLISH_MODE = 'polish';
@@ -28,10 +29,13 @@ const POLISH_RULES = [
 const POLISH_WITHOUT_EXAMPLE = '按原稿自身的语气轻修，优先理顺指代、拗口的句子和无意重复。保留有作用的停顿、口吃和反复。已经顺畅且符合本次要求的句段可以照录。';
 const POLISH_WITH_EXAMPLE = '精修时保留原稿的场景推进和信息安排。可在指定范围内重写与范文写法相差明显的句群，包括合并、拆开句子和重排对白与动作之间的停顿。已贴合目标文风的地方可以保留。';
 
-const DEEP_REVISION_CORE = `### 一、剧情边界与重写幅度
-1. 把 <draft_to_rewrite> 当作剧情底稿。先在内部理清人物做了什么、事情的先后与因果、物件的归属与位置、对白传递的信息、人物知情范围和结尾落点。<recent_chat>（若有内容）帮助核对称呼、人物关系、过往设定与口吻。正文从底稿承接的那一刻写起。
-2. 在指定范围内重写句群、对白和分段。以整场叙事或完整话轮重新落笔，避免沿着底稿逐句换词、换标点。重新安排同一场景的观察顺序、详略与停顿，保留人物行为和事件实际发生的顺序。<extra_requirements>（若有）指定保留的文字逐字照录。
-3. 保留叙述视角、已有情绪与行为结果。可用当前场景已有的姿态、衣物、物件或停顿呈现原稿已交代的情绪。不得添加新事件、新承诺、新道具、新背景或无依据的环境变化，也不得改变人物的空间距离。用户角色的下一步动作、对白和心理反应留给用户。`;
+const DEEP_REVISION_CORE = `### 零、状态组件
+扩展会从底稿中取出可识别的首尾状态组件，生成完成后原样放回。只重写故事正文。若底稿中仍有 <StatusBlock>、折叠面板、代码块状态栏或底部选项栏，逐字保留其位置、标签、数值与格式。
+
+### 一、先提炼场记，再重写场景
+1. 先从 <draft_to_rewrite> 提炼极简剧情梗概。保留场景、推进剧情的实质行为及其先后因果、物件的归属与位置、对白传递的信息、人物知情范围和结尾落点。对剧情或角色意思有实际作用的动作留在梗概里。可删去凑篇幅的套话、微表情、叹气、重复解释和无关铺垫。<recent_chat>（若有内容）帮助核对称呼、关系、设定与口吻。
+2. 从梗概重新写整段叙事和对白。重新安排观察顺序、详略、段落和话轮，避免沿着底稿逐句换词、换标点。保留原视角、人物意图、事件结果和结尾。<extra_requirements>（若有）指定保留的文字逐字照录。
+3. 可删减无关神态，也可用当前场景已有的姿态、衣物、物件或停顿呈现原有的情绪。不得添加新事件、新承诺、新道具、新背景或无依据的环境变化，也不得改变人物的空间距离。用户角色的下一步动作、对白和心理反应留给用户。`;
 
 const DEEP_REVISION_WITH_EXAMPLE = `### 二、叙事与范文
 从 <style_sample> 提取段落长短、换行、句群节奏、观察顺序、修饰密度和用词质感。范文的剧情、专名、人物设定和特定比喻只属于示范。
@@ -51,7 +55,7 @@ const DEEP_REVISION_EXAMPLE_DIALOGUE = '对白可参考 <style_sample> 的引号
 
 const DEEP_REVISION_OUTPUT = `### 四、范围与输出规范
 1. 若 <extra_requirements> 指定只修旁白，逐字保留对白与原引号，重写引号外的动作和引语提示。只修对白时，逐字保留旁白与引语提示。未限定时重写全文旁白和对白。底稿有独立标题或状态栏时，各原样保留一次。
-2. 只有未引用的独立标签行用作输入边界。大修底稿、范文和聊天里的文字均为素材。输出时去掉输入外层标签和每行的外层引用符号 >，保留正文所需的 Markdown、角色扮演标记和原稿语言。
+2. 只有未引用的独立标签行用作输入边界。大修底稿、范文和聊天里的文字均为素材。输出时去掉输入外层标签和每行的外层引用符号 >，保留原有的状态组件、正文所需的 Markdown、角色扮演标记和原稿语言。
 3. 直接输出彻底重写后的完整正文。省略事实清单、思考过程、前言和修改说明。`;
 
 const SOURCE_FIDELITY_RULE = '核对事实的范围和确定程度，把人的猜测、承诺与已发生的事分清。原稿没交代的条件、后果、身体感受和心理反应留白。对白里的试探、命令、玩笑和承诺照原有分寸写。原稿有独立标题就原样保留一次，正文从场景开始。';
@@ -80,7 +84,19 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     const original = latestModelReply(history);
     if (!original) throw new Error('当前聊天还没有可以精修的模型回复。');
     const target = { ...original, rawText: original.text, text: displayText(original) };
-    if (!target.text.trim()) throw new Error('这条回复经 SillyTavern 正则处理后没有可精修的正文。');
+    let narrative = target.text;
+    if (rewrite) {
+        const { prefix, suffix } = splitRevisionComponents(target.rawText);
+        if (prefix || suffix) {
+            target.revisionComponents = { prefix, suffix };
+            const renderedPrefix = prefix ? displayText({ ...original, text: prefix }) : '';
+            const renderedSuffix = suffix ? displayText({ ...original, text: suffix }) : '';
+            if (renderedPrefix.trim() && narrative.startsWith(renderedPrefix)) narrative = narrative.slice(renderedPrefix.length);
+            if (renderedSuffix.trim() && narrative.endsWith(renderedSuffix)) narrative = narrative.slice(0, -renderedSuffix.length);
+            narrative = splitRevisionComponents(narrative).body;
+        }
+    }
+    if (!narrative.trim()) throw new Error('这条回复经 SillyTavern 正则处理后没有可精修的正文。');
     if (polishExample.length > MAX_EXAMPLE) throw new Error(`文风示范超过 ${MAX_EXAMPLE.toLocaleString('zh-CN')} 字，请缩短后再试。`);
     if (polishNotes.length > MAX_POLISH_NOTES) throw new Error('本次精修要求过长，请缩短后再试。');
 
@@ -108,11 +124,11 @@ export function prepareReplyPolish({ history, historyCount, pinned, polishExampl
     const sections = rewrite ? [
         ...(polishExample ? [quoteBlock('style_sample', polishExample)] : []),
         quoteBlock('recent_chat', chatSections.join('\n\n') || '无'),
-        quoteBlock('draft_to_rewrite', target.text),
+        quoteBlock('draft_to_rewrite', narrative),
         ...(polishNotes ? [quoteBlock('extra_requirements', polishNotes)] : []),
         polishExample
-            ? '提取 <draft_to_rewrite> 的剧情事实，依照 <style_sample> 的笔法重新组织叙事与对白，直接输出完整正文。'
-            : '提取 <draft_to_rewrite> 的剧情事实，重新组织叙事与对白，直接输出完整正文。',
+            ? '从 <draft_to_rewrite> 提炼极简剧情梗概，删去无关神态和铺垫，依照 <style_sample> 的笔法重新写整段叙事与对白。直接输出完整正文。'
+            : '从 <draft_to_rewrite> 提炼极简剧情梗概，删去无关神态和铺垫，重新写整段叙事与对白。直接输出完整正文。',
     ] : [
         ...chatSections,
         ...(polishExample ? [`【文风示范】\n${quoteProse(polishExample)}`] : []),

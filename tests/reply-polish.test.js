@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getChatMessages } from '../prompts.js';
+import { restoreRevisionComponents, splitRevisionComponents } from '../revision-components.js';
 import { MAX_EXAMPLE, migratePolishExample, parsePolishedReply, prepareReplyPolish, samePolishTarget, writePolishedReply } from '../reply-polish.js';
 
 const original = '原回复「你来了。」\n\n她把门拉开。';
@@ -67,7 +68,7 @@ test('rebuilds full passages with or without a style example or chat context', (
         assert.doesNotMatch(rewrite.prompt[0].content, /留在它们原本出现的场景/);
         assert.equal(rewrite.prompt[0].content.includes('分别观察范文的对白和旁白'), Boolean(polishExample));
         assert.match(rewrite.prompt[1].content, /<recent_chat>\n> 无\n<\/recent_chat>\n\n<draft_to_rewrite>\n> 原回复/);
-        assert.match(rewrite.prompt[1].content, /<extra_requirements>\n> 只改对白\n<\/extra_requirements>\n\n提取.+直接输出完整正文。$/);
+        assert.match(rewrite.prompt[1].content, /<extra_requirements>\n> 只改对白\n<\/extra_requirements>\n\n从.+直接输出完整正文。$/);
         if (polishExample) {
             assert.ok(rewrite.prompt[1].content.startsWith('<style_sample>\n> 示范原文\n> 示范结尾\n</style_sample>\n\n<recent_chat>'));
             assert.match(polish.prompt[1].content, /【文风示范】[\s\S]+【待精修的回复/);
@@ -90,16 +91,43 @@ test('treats the original as authoritative over preceding chat when rebuilding p
     assert.match(prompt[1].content, /【指定参考消息】\n> .*续写这一轮/);
     assert.equal(prompt[1].content.split('续写这一轮').length, 2);
     assert.doesNotMatch(prompt[1].content, /后续尚未答复的任务|【参考原稿】|【本轮用户输入】/);
-    assert.match(prompt[0].content, /从底稿承接的那一刻写起/);
-    assert.match(prompt[0].content, /事情的先后与因果、物件的归属与位置/);
+    assert.match(prompt[0].content, /先从 <draft_to_rewrite> 提炼极简剧情梗概/);
+    assert.match(prompt[0].content, /实质行为及其先后因果、物件的归属与位置/);
+    assert.match(prompt[0].content, /可删去凑篇幅的套话、微表情、叹气、重复解释和无关铺垫/);
     assert.match(prompt[0].content, /不得添加新事件、新承诺、新道具、新背景/);
     assert.match(prompt[0].content, /不得改变人物的空间距离/);
     assert.match(prompt[0].content, /当前场景已有的姿态、衣物、物件或停顿/);
-    assert.match(prompt[1].content, /<\/recent_chat>\n\n<draft_to_rewrite>\n> 原回复「你来了。」\n>\n> 她把门拉开。\n<\/draft_to_rewrite>\n\n提取/);
+    assert.match(prompt[1].content, /<\/recent_chat>\n\n<draft_to_rewrite>\n> 原回复「你来了。」\n>\n> 她把门拉开。\n<\/draft_to_rewrite>\n\n从/);
     assert.doesNotMatch(prompt[1].content, /\n<extra_requirements>/);
     const contextDisabled = prepareReplyPolish({ ...source, historyCount: 0 });
     assert.doesNotMatch(contextDisabled.prompt[1].content, /续写这一轮|已建立的前文/);
     assert.match(contextDisabled.prompt[1].content, /<draft_to_rewrite>\n> 原回复/);
+});
+
+test('restores exact raw edge components while using the regex-processed narrative in deep revision', () => {
+    const prefix = '  <details open>\r\n<summary>状态</summary><details>备用</details>\r\n</details>\r\n\r\n';
+    const suffix = '\r\n\r\n<StatusBlock data-name="x > y">\r\n值 = 001\r\n</StatusBlock>\r\n\r\n【选项】\r\n1. 返回\r\n2. 等候\r\n';
+    const raw = prefix + '原始正文。' + suffix;
+    const hidden = text => text.replace(/<StatusBlock\b[\s\S]+?<\/StatusBlock>/g, '');
+    const displayText = ({ text }) => hidden(text).replace(prefix.trim(), '<aside>显示状态</aside>').replace('原始正文。', '显示正文。');
+    const { target, prompt } = prepareReplyPolish({
+        history: getChatMessages([{ mes: raw }]), historyCount: 0, rewrite: true, polishExample: '', polishNotes: '', displayText,
+    });
+    assert.equal(target.rawText, raw);
+    assert.deepEqual(target.revisionComponents, { prefix, suffix });
+    assert.match(prompt[0].content, /### 零、状态组件/);
+    assert.match(prompt[1].content, /<draft_to_rewrite>\n> 显示正文。\n<\/draft_to_rewrite>/);
+    assert.doesNotMatch(prompt[1].content, /状态|选项|001|<aside>/);
+    assert.equal(restoreRevisionComponents('新正文。\n<StatusBlock>模型改写的数值</StatusBlock>', target.revisionComponents), prefix + '新正文。' + suffix);
+});
+
+test('detects fenced edge components and leaves narrative code blocks and inline components in the body', () => {
+    const prefix = '```text\n【状态栏】\n心情: 平静\n```\n\n';
+    const body = '开头。\n\n<StatusBlock>详见原文</StatusBlock>\n\n继续。\n\n```js\nconsole.log("结尾");\n```';
+    const suffix = '\n\n~~~choices\n- 继续\n~~~\n';
+    assert.deepEqual(splitRevisionComponents(prefix + body + suffix), { prefix, body, suffix });
+    assert.throws(() => restoreRevisionComponents(prefix.trimEnd(), { prefix, suffix }), /只返回了状态组件/);
+    assert.equal(restoreRevisionComponents('  独立正文。\n', undefined), '  独立正文。\n');
 });
 
 test('keeps roleplay markers and tag-like lines quoted in deep revision inputs', () => {
