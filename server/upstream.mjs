@@ -2,6 +2,7 @@ import { lookup } from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
 import { BlockList, isIP } from 'node:net';
+import { extractVisibleReasoning } from './visible-reasoning.mjs';
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -174,7 +175,9 @@ export async function callUpstream(config, route, { messages, disconnect, withDe
             : '';
         const finishReason = choice?.finish_reason;
         if (!withDetails && !text.trim()) throw new RequestError(502, 'API 已响应，但模型没有返回文本。');
-        return withDetails ? { text, finishReason, ...(outputTokens === undefined ? {} : { outputTokens }) } : text;
+        if (!withDetails) return text;
+        const reasoning = extractVisibleReasoning(data);
+        return { text, finishReason, ...(reasoning ? { reasoning } : {}), ...(outputTokens === undefined ? {} : { outputTokens }) };
     } catch (error) {
         if (error instanceof RequestError) throw error;
         if (timeout.aborted) throw new RequestError(504, 'API 请求超时。');

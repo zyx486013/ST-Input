@@ -254,6 +254,31 @@ function mount() {
     const output = () => outputs.get(config.workspace);
     const setStatus = message => { output().status.textContent = message; };
     const setConfigStatus = message => { ui['config-status'].textContent = message; };
+    const reasoningPreview = element('details', null, 'st-input-config');
+    reasoningPreview.hidden = true;
+    const reasoningText = element('textarea', null, 'text_pole st-input-draft');
+    reasoningText.setAttribute('aria-label', '模型思考内容');
+    reasoningText.readOnly = true;
+    reasoningText.rows = 6;
+    reasoningPreview.append(element('summary', '模型思考 · 本次请求'), reasoningText);
+    outputs.get(POLISH_MODE).result.before(reasoningPreview);
+    let reasoningFrame;
+
+    function clearReasoningPreview() {
+        cancelAnimationFrame(reasoningFrame);
+        reasoningText.value = '';
+        reasoningPreview.hidden = true;
+    }
+
+    function previewReasoning(text) {
+        if (!text || (reasoningPreview.hidden && !text.trim())) return;
+        reasoningPreview.hidden = false;
+        cancelAnimationFrame(reasoningFrame);
+        reasoningFrame = requestAnimationFrame(() => {
+            reasoningText.value = text;
+        });
+    }
+
     const streamPreview = element('details', null, 'st-input-config');
     streamPreview.hidden = true;
     const streamTitle = element('summary', '流式预览');
@@ -435,6 +460,7 @@ function mount() {
         pending?.controller.abort();
         if (!keepComparison) {
             clearStreamPreview();
+            clearReasoningPreview();
             comparison = undefined;
             for (const { status, result } of outputs.values()) {
                 result.replaceChildren();
@@ -621,8 +647,12 @@ function mount() {
         const st = context();
         const chatId = st.getCurrentChatId();
         const polish = source.mode === POLISH_MODE;
-        if (polish) clearStreamPreview();
-        else output().result.replaceChildren();
+        if (polish) {
+            clearStreamPreview();
+            clearReasoningPreview();
+        } else {
+            output().result.replaceChildren();
+        }
         lastPrompt = undefined;
         setStatus('');
         try {
@@ -660,10 +690,18 @@ function mount() {
                 onText: useStream ? text => {
                     if (currentRevision === revision && !signal.aborted) previewStreamText(text);
                 } : undefined,
+                onReasoning: useStream ? text => {
+                    if (currentRevision !== revision || signal.aborted) return;
+                    if (reasoningPreview.hidden && streamPreview.hidden && text.trim()) {
+                        setStatus('正在接收模型思考…');
+                    }
+                    previewReasoning(text);
+                } : undefined,
             });
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
             if (polish) {
                 checkPolishSource(snapshot);
+                previewReasoning(result.reasoning);
                 const text = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
                 clearStreamPreview();
                 showPolishedVersion(snapshot, source, text);
