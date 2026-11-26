@@ -3,6 +3,7 @@ import { parsePolishedReply, quoteBlock } from './reply-polish.js';
 import { MAX_POLISH_MESSAGE } from './server/polish-parameters.mjs';
 
 export const REVISION_ROLES = {
+    extract: '剧情提取',
     review: '剧情审校',
     plan: '剧情编辑',
     write: '文风编辑',
@@ -12,6 +13,7 @@ export const REVISION_ROLES = {
 };
 
 export function revisionStages(mode, audit) {
+    if (mode === 'rewrite') return ['extract', 'write'];
     if (mode === 'review') return ['review'];
     return audit ? ['review', 'plan', 'write', 'audit', 'repair', 'verify'] : ['review', 'plan', 'write'];
 }
