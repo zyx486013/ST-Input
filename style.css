@@ -333,27 +333,6 @@
     border-inline-start: 2px solid var(--st-line);
 }
 
-#st-input-panel [data-st="team-results"]:empty {
-    display: none;
-}
-
-#st-input-panel .st-input-team-record {
-    overflow-wrap: anywhere;
-}
-
-#st-input-panel [data-role="extract"] li {
-    white-space: pre-wrap;
-}
-
-#st-input-panel .st-input-team-record :is(p, ul, blockquote),
-#st-input-panel [data-st="team-results"] blockquote {
-    margin-block: 0;
-}
-
-#st-input-panel .st-input-team-record .menu_button {
-    justify-self: start;
-}
-
 #st-input-panel .st-input-work small {
     font-weight: normal;
     opacity: 0.8;

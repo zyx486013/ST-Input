@@ -58,6 +58,6 @@ export function splitRevisionComponents(text) {
 export function restoreRevisionComponents(text, components) {
     if (!components?.prefix && !components?.suffix) return text;
     const { body } = splitRevisionComponents(text);
-    if (!body.trim()) throw new Error('模型只返回了状态组件。请重新大修正文。');
+    if (!body.trim()) throw new Error('模型只返回了状态组件。请重新生成正文。');
     return components.prefix + body.trim() + components.suffix;
 }

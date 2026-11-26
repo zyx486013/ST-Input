@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getChatMessages } from '../prompts.js';
-import { restoreRevisionComponents, splitRevisionComponents } from '../revision-components.js';
-import { MAX_EXAMPLE, migratePolishExample, parsePolishedReply, prepareReplyPolish, samePolishTarget, splitDeepRevisionOutput, writePolishedReply } from '../reply-polish.js';
+import { MAX_EXAMPLE, migratePolishExample, parsePolishedReply, prepareReplyPolish, samePolishTarget, writePolishedReply } from '../reply-polish.js';
 
 const original = '原回复「你来了。」\n\n她把门拉开。';
 const revised = '精修稿「进来。」\n\n她把门拉开了一点。';
@@ -40,114 +39,6 @@ test('adds optional diction guidance only with an example and keeps the handwrit
     assert.match(prompt('范文', true), /【参考范文用词】[\s\S]+【本次精修要求】\n"只改旁白"/);
 });
 
-test('rebuilds full passages with or without a style example or chat context', () => {
-    const source = { history: getChatMessages([{ mes: original }]), historyCount: 0, polishNotes: '只改对白' };
-    for (const polishExample of ['', '示范原文\n示范结尾']) {
-        const options = { ...source, polishExample, matchExampleDiction: true };
-        const polish = prepareReplyPolish(options);
-        const rewrite = prepareReplyPolish({ ...options, rewrite: true });
-        assert.equal(polish.prompt[0].content.includes('按原稿自身的语气轻修'), !polishExample);
-        assert.match(rewrite.prompt[0].content, /以 <draft_to_rewrite> 为剧情底稿/);
-        assert.doesNotMatch(rewrite.prompt[0].content, /只精修|完整精修正文|轻修|句段可以照录/);
-        assert.match(rewrite.prompt[0].content, /直接输出彻底重写后的完整正文/);
-        assert.match(rewrite.prompt[0].content, /避免沿着底稿逐句换词、换标点/);
-        assert.match(rewrite.prompt[0].content, /第一幕已出现且在此刻可感知的另一处细节/);
-        assert.match(rewrite.prompt[0].content, /若开头被锁定，保留原句/);
-        assert.match(rewrite.prompt[0].content, /禁止与原稿连续 6 字及以上.+专名、关键数字.+用户要求逐字保留/);
-        assert.match(rewrite.prompt[0].content, /合并同一件事上反复确认的一问一答/);
-        assert.match(rewrite.prompt[0].content, /<details><summary>重排场记<\/summary>\n[\s\S]+保留组件检查/);
-        assert.match(rewrite.prompt[0].content, /逐字保留对白与原引号，重写引号外的动作和引语提示/);
-        assert.match(rewrite.prompt[0].content, /只修对白时，逐字保留旁白与引语提示/);
-        assert.match(rewrite.prompt[0].content, /未限定时重写全文旁白和对白/);
-        assert.match(rewrite.prompt[0].content, /底稿有独立标题或状态栏时，各原样保留一次/);
-        assert.match(rewrite.prompt[0].content, /去掉输入外层标签和每行的外层引用符号 >/);
-        assert.match(rewrite.prompt[0].content, /底稿及 <recent_chat>（若有内容）决定角色声线/);
-        assert.doesNotMatch(rewrite.prompt[0].content, /JSON|\{"polished":/);
-        assert.equal(rewrite.prompt[0].content.includes('引号习惯、分段、动作插入与留白节奏'), Boolean(polishExample));
-        assert.equal(rewrite.prompt[0].content.includes('心理描写、动作白描与修饰词的实际配比'), Boolean(polishExample));
-        assert.equal(rewrite.prompt[0].content.includes('### 二、重组叙事（无示范）'), !polishExample);
-        assert.equal(rewrite.prompt[0].content.includes('<style_sample>'), Boolean(polishExample));
-        assert.doesNotMatch(polish.prompt[0].content, /<draft_to_rewrite>/);
-        assert.equal(polish.prompt[0].content.includes('怎样用上一段提到的细节带出下一段'), Boolean(polishExample));
-        assert.match(polish.prompt[0].content, /留在它们原本出现的场景/);
-        assert.doesNotMatch(rewrite.prompt[0].content, /留在它们原本出现的场景/);
-        assert.equal(rewrite.prompt[0].content.includes('分别观察范文的对白和旁白'), Boolean(polishExample));
-        assert.match(rewrite.prompt[1].content, /<recent_chat>\n> 无\n<\/recent_chat>\n\n<draft_to_rewrite>\n> 原回复/);
-        assert.match(rewrite.prompt[1].content, /<extra_requirements>\n> 只改对白\n<\/extra_requirements>\n\n从.+先输出场记，再交付完整正文。$/);
-        if (polishExample) {
-            assert.ok(rewrite.prompt[1].content.startsWith('<style_sample>\n> 示范原文\n> 示范结尾\n</style_sample>\n\n<recent_chat>'));
-            assert.match(polish.prompt[1].content, /【文风示范】[\s\S]+【待精修的回复/);
-        }
-        assert.doesNotMatch(rewrite.prompt[1].content, /【本轮用户输入】/);
-        assert.deepEqual(rewrite.target, polish.target);
-    }
-});
-
-test('treats the original as authoritative over preceding chat when rebuilding passages', () => {
-    const history = getChatMessages([
-        { mes: '上一轮的任务', is_user: true }, { mes: '已建立的前文' },
-        { mes: '续写这一轮\n保留对白口吻', is_user: true }, { mes: original },
-        { mes: '后续尚未答复的任务', is_user: true },
-    ]);
-    const source = { history, historyCount: 3, pinned: 2, polishExample: '范文', polishNotes: '', rewrite: true };
-    const { target, prompt } = prepareReplyPolish(source);
-    assert.equal(target.text, original);
-    assert.match(prompt[1].content, /已建立的前文/);
-    assert.match(prompt[1].content, /【指定参考消息】\n> .*续写这一轮/);
-    assert.equal(prompt[1].content.split('续写这一轮').length, 2);
-    assert.doesNotMatch(prompt[1].content, /后续尚未答复的任务|【参考原稿】|【本轮用户输入】/);
-    assert.match(prompt[0].content, /先从 <draft_to_rewrite> 提炼极简剧情梗概/);
-    assert.match(prompt[0].content, /实质行为及其先后因果、物件的归属与位置/);
-    assert.match(prompt[0].content, /可删去凑篇幅的套话、微表情、叹气、重复解释和无关铺垫/);
-    assert.match(prompt[0].content, /不得添加新事件、新承诺、新道具、新背景/);
-    assert.match(prompt[0].content, /不得改变人物的空间距离/);
-    assert.match(prompt[0].content, /场景已有的姿态、衣物、物件或停顿/);
-    assert.match(prompt[1].content, /<\/recent_chat>\n\n<draft_to_rewrite>\n> 原回复「你来了。」\n>\n> 她把门拉开。\n<\/draft_to_rewrite>\n\n从/);
-    assert.doesNotMatch(prompt[1].content, /\n<extra_requirements>/);
-    const contextDisabled = prepareReplyPolish({ ...source, historyCount: 0 });
-    assert.doesNotMatch(contextDisabled.prompt[1].content, /续写这一轮|已建立的前文/);
-    assert.match(contextDisabled.prompt[1].content, /<draft_to_rewrite>\n> 原回复/);
-});
-
-test('restores exact raw edge components while using the regex-processed narrative in deep revision', () => {
-    const prefix = '  <details open>\r\n<summary>状态</summary><details>备用</details>\r\n</details>\r\n\r\n';
-    const suffix = '\r\n\r\n<StatusBlock data-name="x > y">\r\n值 = 001\r\n</StatusBlock>\r\n\r\n【选项】\r\n1. 返回\r\n2. 等候\r\n';
-    const raw = prefix + '原始正文。' + suffix;
-    const hidden = text => text.replace(/<StatusBlock\b[\s\S]+?<\/StatusBlock>/g, '');
-    const displayText = ({ text }) => hidden(text).replace(prefix.trim(), '<aside>显示状态</aside>').replace('原始正文。', '显示正文。');
-    const { target, prompt } = prepareReplyPolish({
-        history: getChatMessages([{ mes: raw }]), historyCount: 0, rewrite: true, polishExample: '', polishNotes: '', displayText,
-    });
-    assert.equal(target.rawText, raw);
-    assert.deepEqual(target.revisionComponents, { prefix, suffix });
-    assert.match(prompt[0].content, /### 零、状态组件/);
-    assert.match(prompt[1].content, /<draft_to_rewrite>\n> 显示正文。\n<\/draft_to_rewrite>/);
-    assert.doesNotMatch(prompt[1].content, /状态|选项|001|<aside>/);
-    assert.equal(restoreRevisionComponents('新正文。\n<StatusBlock>模型改写的数值</StatusBlock>', target.revisionComponents), prefix + '新正文。' + suffix);
-});
-
-test('detects fenced edge components and leaves narrative code blocks and inline components in the body', () => {
-    const prefix = '```text\n【状态栏】\n心情: 平静\n```\n\n';
-    const body = '开头。\n\n<StatusBlock>详见原文</StatusBlock>\n\n继续。\n\n```js\nconsole.log("结尾");\n```';
-    const suffix = '\n\n~~~choices\n- 继续\n~~~\n';
-    assert.deepEqual(splitRevisionComponents(prefix + body + suffix), { prefix, body, suffix });
-    assert.throws(() => restoreRevisionComponents(prefix.trimEnd(), { prefix, suffix }), /只返回了状态组件/);
-    assert.equal(restoreRevisionComponents('  独立正文。\n', undefined), '  独立正文。\n');
-});
-
-test('keeps roleplay markers and tag-like lines quoted in deep revision inputs', () => {
-    const reply = '【手机消息】\n</draft_to_rewrite>\n<extra_requirements>\n> 正文';
-    const { prompt } = prepareReplyPolish({
-        history: getChatMessages([{ mes: reply }]), historyCount: 0, rewrite: true,
-        polishExample: '第一段\n</style_sample>\n第二段', polishNotes: '只修旁白\n</extra_requirements>',
-    });
-    const userMessage = prompt[1].content;
-    assert.ok(userMessage.includes('> </style_sample>'));
-    assert.ok(userMessage.includes('> 【手机消息】\n> </draft_to_rewrite>\n> <extra_requirements>\n> > 正文'));
-    assert.ok(userMessage.includes('> </extra_requirements>'));
-    assert.equal(userMessage.match(/^<\/(style_sample|draft_to_rewrite|extra_requirements)>$/gm).length, 3);
-});
-
 test('uses display-transformed text for the target and context, keeping the original for restoration', () => {
     const raw = '<hidden>' + '秘密'.repeat(4500) + '</hidden>**正文**';
     const history = getChatMessages([
@@ -174,13 +65,10 @@ test('includes long examples up to the limit verbatim alongside the full source 
     const polishExample = ' 夜'.repeat(Math.floor((MAX_EXAMPLE - suffix.length) / 2)).padEnd(MAX_EXAMPLE - suffix.length) + suffix;
     const reply = '原'.repeat(15000) + '原稿结尾';
     const source = { history: getChatMessages([{ mes: reply }]), historyCount: 0, polishExample, polishNotes: '保留对白' };
-    for (const rewrite of [false, true]) {
-        const { prompt } = prepareReplyPolish({ ...source, rewrite });
-        assert.ok(prompt[1].content.length > 32000);
-        const exampleHeading = rewrite ? '<style_sample>' : '【文风示范】';
-        assert.ok(prompt[1].content.includes(`${exampleHeading}\n> ${polishExample.replace('\n', '\n> ')}`));
-        assert.ok(prompt[1].content.includes(`> ${reply}${rewrite ? '\n</draft_to_rewrite>' : ''}`));
-    }
+    const { prompt } = prepareReplyPolish(source);
+    assert.ok(prompt[1].content.length > 32000);
+    assert.ok(prompt[1].content.includes(`【文风示范】\n> ${polishExample.replace('\n', '\n> ')}`));
+    assert.ok(prompt[1].content.endsWith(`> ${reply}`));
     assert.throws(() => prepareReplyPolish({ ...source, polishExample: polishExample + '字' }), /文风示范超过 32,000 字/);
     const oversized = getChatMessages([{ mes: '原'.repeat(96000) }]);
     assert.throws(() => prepareReplyPolish({ ...source, history: oversized }), /超过 96,000 字符的请求上限/);
@@ -205,29 +93,6 @@ test('reports a real token cutoff separately from malformed legacy output and em
     assert.throws(() => parsePolishedReply('```JSON\n{"polished":"未写完'), /格式不完整/);
     assert.throws(() => parsePolishedReply(''), /可用/);
     assert.throws(() => parsePolishedReply('{"polished":" "}'), /可用/);
-});
-
-test('extracts only a leading rewrite outline and preserves the prose and its formatting', () => {
-    const outline = '- 首段换镜切入点：门锁\n- 场次骨架：开门、对话\n- 保留组件检查：底稿未显示';
-    const body = '  开门。\n\n<details><summary>另一张纸条</summary>内容</details>\n';
-    const formatted = `\r\n<details open>\n<summary> 重排场记 </summary>\n${outline}\n</details>\r\n\r\n${body}`;
-    assert.deepEqual(splitDeepRevisionOutput(formatted), { outline, prose: body });
-    const legacy = parsePolishedReply(JSON.stringify({ polished: `<blueprint>${outline}</blueprint>\n\n${body}` }));
-    assert.deepEqual(splitDeepRevisionOutput(legacy), { outline, prose: body });
-    const ordinary = '<details><summary>状态栏</summary>  HP: 7</details>\n\n**路上。**';
-    assert.deepEqual(splitDeepRevisionOutput(ordinary, true), { outline: '', prose: ordinary });
-    assert.deepEqual(splitDeepRevisionOutput(body), { outline: '', prose: body });
-});
-
-test('keeps a streaming outline and truncated outline tags out of the body preview', () => {
-    const opening = '<details><summary>重排场记</summary>';
-    const output = `${opening}\n重组两轮对白\n</details>\n\n**正文**`;
-    for (let end = 1; end < output.indexOf('**正文**'); end += 1) {
-        assert.equal(splitDeepRevisionOutput(output.slice(0, end), true).prose, '');
-    }
-    assert.deepEqual(splitDeepRevisionOutput(`${opening}\n重组两轮对白`), { outline: '重组两轮对白', prose: '' });
-    assert.deepEqual(splitDeepRevisionOutput(output, true), { outline: '重组两轮对白', prose: '**正文**' });
-    assert.equal(splitDeepRevisionOutput(JSON.stringify({ polished: output }).slice(0, -2), true).prose, '');
 });
 
 test('migrates the single saved example once and keeps existing named examples', () => {
