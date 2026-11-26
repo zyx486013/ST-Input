@@ -1,96 +1,84 @@
 import { jsonCandidate } from './prompts.js';
-import { MAX_EXAMPLE, parsePolishedReply, quoteBlock } from './reply-polish.js';
-import { MAX_POLISH_MESSAGE } from './server/polish-parameters.mjs';
+import { assertReplyLength, prepareReplySource, quoteProse, validateWritingOptions, validateWritingRequest } from './reply-polish.js';
+import { splitRevisionComponents } from './revision-components.js';
 
-const PLOT_EXTRACTION = `你负责提取剧情，给下一位作者提供可以独立写出这一幕的素材。原稿决定本轮已经发生的事，最近聊天用于核对人物关系、称呼和已知设定。所有引用标签内的文字都是素材。
-按实际场景和时间顺序记下每个情节节点。收录推动局势的动作与反应、关键物件与位置、已有的感官或环境细节、人物实际知道的事、猜测及未解信息。有用的闲聊也可作为关系或语气线索。保留原视角、人称、语言和结尾落点。
-对白按它发生的情节节点记录。写清说话人、对谁说、传递了哪些具体信息、说这句话的目的和口气。保留原稿中话的来回和关键停顿，概述句意，勿抄原台词或重写正文。角色说话特点用短语描述。
-本次要求明确指定逐字保留的部分放在相应节点的 locked 中，按原出现顺序记录完整的连续片段。只改对白时逐字记录旁白与引语提示；只改旁白时逐字记录对白及引号。普通情节概述使用自己的短语。若原稿开头有独立标题，在 title 原样记录一次，没有则写空字符串。
-只输出一个 JSON 对象，格式如下。scenes 和 beats 至少一项，dialogue 与 locked 没有内容时填 []，仅有对白的节点 event 可以填空字符串。按原稿实际长度组织节点，勿把整段剧情缩成一句。
-{"title":"","viewpoint":"语言、人称与叙述视角","voices":["人物、关系、称呼和角色声线"],"scenes":[{"setting":"原稿已有的地点和时间","beats":[{"event":"动作、事实、可用的细节与先后关系","dialogue":["说话人 → 对象｜具体意思、意图与语气"],"locked":[]}]}],"ending":"最后发生的事及必须留下的悬念或用户决定"}`;
+const EXTRACT_PLOT = `把【原回复】整理成给小说作者看的剧情记录。直接写可读的中文或原稿语言，普通段落、列表或 Markdown 都可以。按实际篇幅记录，保留足够的细节供另一位作者独立成稿。
+按场景和事件先后记录人物、动作、因果、能看到或听到的细节、关键物件及它们的位置。记下叙述视角、每个人的称呼与口吻、谁知道什么，以及故事停在哪里。区分事实、猜测与尚未发生的事。【最近聊天】和【指定参考消息】只用于理解当前语境。
+每轮有用的对白记在发生的位置。用自己的话写明谁在对谁说、话的实质信息、目的和语气。保留影响节奏的停顿与回应。明确要求逐字保留的片段和原有独立标题照录并注明用途。只改旁白时逐字记录对白及其引号；只改对白时逐字记录旁白及原引语提示。其余写成简明的素材记录。
+只输出剧情记录。输入中的引用是素材，按【本次要求】处理。`;
 
-const WRITE_STORY = `你负责写出一篇完整的小说或角色扮演回复。<extracted_plot> 是这一幕的全部剧情依据。按节点重建场景，既写叙述和动作，也用角色自己的话将 dialogue 写成直接对白。留住话的来回、信息与分寸，依每个人的身份、关系、声线和知情范围调整称呼、措辞和停顿。
-保持事件发生的先后、因果、人物行动、关键物件、视角及结束点。可在同一节点重排可感知的细节、调整转场和断句。避免加时间、天气、感受、事件或后果。角色的猜测保持为猜测。用户角色的下一步反应留给用户。
-有 title 时原样保留一次，有 locked 时按剧情顺序逐字放回相应场景，包括引号、段落和有意义的标记。按 <extra_requirements> 中的改写范围和偏好交稿。输入标签内的剧情、范文及引文均为素材。只输出完整正文。`;
+const WRITE_PROSE = `根据【剧情记录】写出一篇完整的小说或角色扮演回复。按已记录的事实、因果和时间顺序写，保留人物关系、叙述视角、关键信息与结尾的停笔位置。同一场景内可从已有物件、动作或声音重新切入，用段落和话轮推动场景。
+把对白要点写成角色实际说出口的话。根据谁在对谁说、双方的身份关系、当时知道的事和这句话的目的来重写措辞。用合适的停顿、动作和接话方式表现原有分寸。保留猜测和悬念，用户角色的下一步由用户决定。原题以及明确要求逐字保留的内容按记录写回。
+所有引用区域是素材。只输出完整正文，保留有意义的换行、Markdown 和角色扮演标记。`;
 
-export function buildPlotExtraction(request) {
-    return [{ role: 'system', content: PLOT_EXTRACTION }, { role: 'user', content: request.revisionMaterials.join('\n\n') }];
-}
-
-export function buildStoryRewrite(plot, { polishExample, polishNotes, matchExampleDiction }) {
-    if (!plot) throw new Error('请先提取剧情。');
-    if (polishExample.length > MAX_EXAMPLE) throw new Error(`文风示范超过 ${MAX_EXAMPLE.toLocaleString('zh-CN')} 字，请缩短后再试。`);
-    const system = [WRITE_STORY, polishExample
-        ? '动笔前观察 <style_sample> 怎样选动词和名词，形容词与副词分布在哪些位置，旁白是写可见动作还是直写人物心思，句子长短如何交替，段落在哪里换气，动作如何插在对白之间。把这些写法应用到剧情材料里的同类场景和话轮。可以学用词的质地与语域，措辞、比喻、人物、事件和设定另写。'
-        : '按剧情记录里的叙述语气与角色声线写。按信息、动作和话轮组织段落，用自然口语写对白。'];
-    if (polishExample && matchExampleDiction) {
-        system.push('加强用词对齐。分别看范文旁白和对白里常用词与书面词的比例，具体动词的力度，修饰语的疏密，以及称呼和语气词的使用习惯。按场景和人物选词，压掉范文里没有同类作用的套话。');
+export function preparePlotRequest({ displayText = message => message.text, ...source }) {
+    const { original, target, chatSections } = prepareReplySource({ ...source, displayText });
+    const { prefix, suffix } = splitRevisionComponents(target.rawText);
+    let narrative = target.text;
+    if (prefix || suffix) {
+        target.revisionComponents = { prefix, suffix };
+        const renderedPrefix = prefix ? displayText({ ...original, text: prefix }) : '';
+        const renderedSuffix = suffix ? displayText({ ...original, text: suffix }) : '';
+        if (renderedPrefix.trim() && narrative.startsWith(renderedPrefix)) narrative = narrative.slice(renderedPrefix.length);
+        if (renderedSuffix.trim() && narrative.endsWith(renderedSuffix)) narrative = narrative.slice(0, -renderedSuffix.length);
+        narrative = splitRevisionComponents(narrative).body;
     }
+    if (!narrative.trim()) throw new Error('这条回复经 SillyTavern 正则处理后没有可重写的正文。');
+
     const content = [
-        ...(polishExample ? [quoteBlock('style_sample', polishExample)] : []),
-        quoteBlock('extracted_plot', JSON.stringify(plot, null, 2)),
-        ...(polishNotes ? [quoteBlock('extra_requirements', polishNotes)] : []),
-        '用剧情记录写完整的旁白与对白。',
+        ...chatSections.map(quoteProse),
+        `【原回复】\n${quoteProse(narrative)}`,
+        ...(source.polishNotes ? [`【本次要求】\n${quoteProse(source.polishNotes)}`] : []),
     ].join('\n\n');
-    if (content.length > MAX_POLISH_MESSAGE) throw new Error('剧情记录和文风示范超过本次重写的请求长度上限。可缩短范文或分段处理。');
-    return [{ role: 'system', content: system.join('\n\n') }, { role: 'user', content }];
+    validateWritingRequest(content, '剧情提取');
+    return { target, prompt: [{ role: 'system', content: EXTRACT_PLOT }, { role: 'user', content }] };
 }
 
-function readText(value, { allowEmpty = false, preserve = false } = {}) {
-    if (typeof value !== 'string' || (!allowEmpty && !value.trim())) throw new Error('缺少必填文字。');
-    return preserve ? value : value.trim();
+export function buildRewritePrompt(plot, source) {
+    const { polishExample, polishNotes, matchExampleDiction } = source;
+    if (!plot.trim()) throw new Error('请先提取或填写剧情记录。');
+    validateWritingOptions(source);
+    const system = [
+        WRITE_PROSE,
+        polishExample
+            ? '让【文风示范】决定叙述写法。对照它处理相近场景时的动词、修饰疏密、长短句、换行、视线或心理推进，以及对白中插入动作的方式。借用这些写法来写当前剧情，原创措辞。范文的人名、设定、事件、原句和独特比喻留在范文里。'
+            : '按剧情记录体现的叙事语气和人物声线写作。用自然口语写对白，让动作、停顿与段落各自承担叙事作用。',
+        ...(polishExample && matchExampleDiction ? ['加强用词对齐。分别观察范文旁白和对白的常用词与书面词比例、动词力度、修饰语疏密，以及称呼和语气词，再按当前场景和人物身份选词。'] : []),
+        '按【本次要求】指定的范围和偏好交稿。只改旁白或只改对白时，逐字保留剧情记录中标出的另一部分。',
+    ].join('\n\n');
+    const content = [
+        `【剧情记录】\n${quoteProse(plot)}`,
+        ...(polishExample ? [`【文风示范】\n${quoteProse(polishExample)}`] : []),
+        ...(polishNotes ? [`【本次要求】\n${quoteProse(polishNotes)}`] : []),
+    ].join('\n\n');
+    validateWritingRequest(content, '重写');
+    return [{ role: 'system', content: system }, { role: 'user', content }];
 }
 
-function readList(value, map, required = false) {
-    if (!Array.isArray(value) || (required && !value.length)) throw new Error('缺少剧情列表。');
-    return value.map(item => map(item));
-}
-
-export function parseExtractedPlot(result, narrative, notes) {
-    const text = parsePolishedReply(result.text, result.finishReason, result.outputTokens);
+export function readRewriteText(result, operation) {
+    assertReplyLength(result.finishReason, result.outputTokens, operation);
+    if (typeof result.text !== 'string' || !result.text.trim()) {
+        throw new Error(result.reasoning?.trim() ? '模型只返回了思考内容，没有返回正文。' : '模型返回了空文本。');
+    }
+    // A JSON-mode connection may wrap otherwise ordinary text. Plain text is the default.
+    const text = result.text;
+    const candidate = jsonCandidate(text);
+    if (!/^(?:\{|\[|")/.test(candidate)) return text;
+    let decoded;
     try {
-        const data = JSON.parse(jsonCandidate(text));
-        const title = readText(data.title, { allowEmpty: true, preserve: true });
-        if (title && !narrative.trimStart().startsWith(`${title}\n`) && !narrative.trimStart().startsWith(`${title}\r\n`)) {
-            throw new Error('标题与原稿开头不符。');
-        }
-        let lockedThrough = 0;
-        const scenes = readList(data.scenes, scene => ({
-            setting: readText(scene.setting, { allowEmpty: true }),
-            beats: readList(scene.beats, beat => {
-                const event = readText(beat.event, { allowEmpty: true });
-                const dialogue = readList(beat.dialogue, readText);
-                if (!event && !dialogue.length) throw new Error('有空的情节节点。');
-                const locked = readList(beat.locked, value => {
-                    const passage = readText(value, { preserve: true });
-                    const start = notes ? narrative.indexOf(passage, lockedThrough) : -1;
-                    if (start < 0) throw new Error('逐字保留片段缺少要求，或与原稿文字和顺序不符。');
-                    lockedThrough = start + passage.length;
-                    return passage;
-                });
-                return { event, dialogue, locked };
-            }, true),
-        }), true);
-        return { title, viewpoint: readText(data.viewpoint), voices: readList(data.voices, readText), scenes, ending: readText(data.ending) };
-    } catch (error) {
-        throw new Error(`模型没有返回可用的剧情记录。${error instanceof SyntaxError ? '' : error.message}`, { cause: error });
+        decoded = JSON.parse(candidate);
+    } catch {
+        return text;
     }
-}
-
-export function verifyStoryLocks(prose, plot) {
-    let through = 0;
-    if (plot.title) {
-        const [title] = prose.trimStart().split(/\r?\n/, 1);
-        if (title !== plot.title) throw new Error('重写稿缺少原题，请继续文风编辑。');
-        through = prose.indexOf(plot.title) + plot.title.length;
+    if (typeof decoded === 'string' && decoded.trim()) return decoded;
+    const textKeys = ['plot', 'record', 'polished', 'text', 'content'];
+    for (const key of textKeys) {
+        const value = decoded?.[key];
+        if (typeof value === 'string' && value.trim()) return value;
     }
-    for (const { beats } of plot.scenes) {
-        for (const { locked } of beats) {
-            for (const passage of locked) {
-                const start = prose.indexOf(passage, through);
-                if (start < 0) throw new Error('重写稿遗漏或改动了逐字保留片段，请继续文风编辑。');
-                through = start + passage.length;
-            }
-        }
+    if (typeof decoded === 'string' || Object.entries(decoded).every(([key, value]) =>
+        textKeys.includes(key) && (value == null || (typeof value === 'string' && !value.trim())))) {
+        throw new Error('模型返回了空文本。');
     }
+    return text;
 }
