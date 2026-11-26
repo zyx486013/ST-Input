@@ -5,6 +5,7 @@ import { createGenerationParameters, getStreamingReply, proxies } from '/scripts
 import { completeWithSillyTavern } from './connections.js';
 import { TIMEOUT_524_MESSAGE } from './polish-stream.js';
 import { restoreRevisionComponents } from './revision-components.js';
+import { buildPlotExtraction, buildStoryRewrite, parseExtractedPlot, verifyStoryLocks } from './story-rewrite.js';
 import { approvedChanges, buildRevisionStage, parseRevisionStage, REVISION_ROLES, revisionStageNeeded, revisionStages } from './revision-team.js';
 import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
@@ -134,7 +135,7 @@ function mount() {
                     <fieldset class="st-input-style-mode" data-st="polish-method">
                         <legend>修改方式</legend>
                         <label><input type="radio" name="st-input-polish-method" data-st="polish-light">精修</label>
-                        <label title="保留原稿情节，重新组织整段旁白和对白"><input type="radio" name="st-input-polish-method" data-st="polish-rewrite">大修</label>
+                        <label title="先提取剧情，再按范文重写旁白和对白"><input type="radio" name="st-input-polish-method" data-st="polish-rewrite">重写</label>
                     </fieldset>
                     <fieldset class="st-input-style-mode">
                         <legend>文风示范</legend>
@@ -165,18 +166,19 @@ function mount() {
                     </div>
                     <div class="st-input-actions">
                         <button class="menu_button st-input-primary" type="button" data-st="polish-generate">开始精修</button>
-                        <button class="menu_button" type="button" data-st="team-toggle" aria-controls="st-input-team" aria-expanded="false" hidden>大修设置与记录</button>
+                        <button class="menu_button" type="button" data-st="team-toggle" aria-controls="st-input-team" aria-expanded="false" hidden>重写设置与记录</button>
                         <button class="menu_button" type="button" data-st="polish-undo" hidden>恢复原回复</button>
                     </div>
                     <div id="st-input-team" class="st-input-config" data-st="team" hidden>
                         <fieldset class="st-input-style-mode" data-st="team-controls">
-                            <legend>大修设置</legend>
+                            <legend>重写设置</legend>
                             <label>任务<select class="text_pole" data-st="team-mode">
-                                <option value="preserve">守剧情大修</option>
+                                <option value="rewrite">提取剧情后重写</option>
+                                <option value="preserve">审校后大修</option>
                                 <option value="review">只查漏洞</option>
                                 <option value="adjust">允许剧情调整</option>
                             </select></label>
-                            <label><input type="checkbox" data-st="team-audit" checked>终审并按需返工</label>
+                            <label data-st="team-audit-option" hidden><input type="checkbox" data-st="team-audit" checked>终审并按需返工</label>
                         </fieldset>
                         <div class="st-input-config" data-st="team-results" aria-label="多角色编辑记录"></div>
                     </div>
@@ -462,12 +464,13 @@ function mount() {
         ui['polish-method'].disabled = busy;
         ui['polish-stream'].disabled = busy;
         const rewrite = ui['polish-rewrite'].checked;
-        const reviewOnly = rewrite && ui['team-mode'].value === 'review';
-        ui['polish-generate'].textContent = reviewOnly ? '开始审校' : rewrite ? '开始大修' : '开始精修';
+        const teamMode = ui['team-mode'].value;
+        const reviewOnly = rewrite && teamMode === 'review';
+        ui['polish-generate'].textContent = reviewOnly ? '开始审校' : !rewrite ? '开始精修' : teamMode === 'rewrite' ? '开始重写' : '开始大修';
         ui['polish-generate'].disabled = busy || (!reviewOnly && ui['with-example'].checked && !ui['polish-example'].value.trim());
         ui['team-controls'].disabled = busy;
         ui['team-toggle'].disabled = busy;
-        ui['team-audit'].disabled = ui['team-mode'].value === 'review';
+        ui['team-audit-option'].hidden = teamMode === 'review' || teamMode === 'rewrite';
         for (const control of ui['team-results'].querySelectorAll('button, select')) control.disabled = busy;
         ui['polish-undo'].disabled = busy;
         const apply = output().result.querySelector('[data-polish-apply]');
@@ -542,7 +545,8 @@ function mount() {
             const source = getSource(mode);
             if (source.rewrite) {
                 const request = prepareReplyPolish({ ...source, polishExample: '' });
-                showPrompt(buildRevisionStage('review', ui['team-mode'].value, request, {}, []));
+                const teamMode = ui['team-mode'].value;
+                showPrompt(teamMode === 'rewrite' ? buildPlotExtraction(request) : buildRevisionStage('review', teamMode, request, {}, []));
             } else {
                 showPrompt(buildRequest(source).prompt);
             }
@@ -812,6 +816,16 @@ function mount() {
             const status = team.active === stage ? '进行中' : team.retry === stage ? '待重试' : result ? '完成' : skipped ? '已跳过' : '等待';
             details.append(element('summary', `${REVISION_ROLES[stage]} · ${status}`));
             const body = element('div', null, 'st-input-config st-input-team-record');
+            if (stage === 'extract' && result) {
+                if (result.title) body.append(element('strong', result.title));
+                body.append(element('p', result.viewpoint));
+                if (result.voices.length) body.append(list(result.voices));
+                for (const { setting, beats } of result.scenes) {
+                    if (setting) body.append(element('strong', setting));
+                    body.append(list(beats.map(({ event, dialogue, locked }) => [event, ...dialogue, ...locked].filter(Boolean).join('\n'))));
+                }
+                body.append(element('strong', '结尾落点'), element('p', result.ending));
+            }
             if (result?.facts) body.append(element('strong', '原稿事实'), list(result.facts));
             if (result?.issues) {
                 appendIssues(body, result.issues.length ? '发现的问题' : '本次未发现明确问题', result.issues);
@@ -867,9 +881,9 @@ function mount() {
     }
 
     function canRunTeamStage(stage) {
-        const { review, plan, write } = team.results;
+        const { extract, review, plan, write } = team.results;
         if (stage === 'plan') return revisionStageNeeded(stage, team.results);
-        if (stage === 'write') return review && (plan || !revisionStageNeeded('plan', team.results));
+        if (stage === 'write') return team.mode === 'rewrite' ? Boolean(extract) : review && (plan || !revisionStageNeeded('plan', team.results));
         if (stage === 'audit') return Boolean(write);
         return false;
     }
@@ -881,7 +895,7 @@ function mount() {
         if (!source) return;
         try {
             const st = context();
-            if (chatIsGenerating(st)) throw new Error('请等当前回复生成完毕，再开始多角色大修。');
+            if (chatIsGenerating(st)) throw new Error('请等当前回复生成完毕，再开始重写。');
             const request = prepareReplyPolish({ ...source, rewrite: true, polishExample: '' });
             const message = st.chat[request.target.index];
             const snapshot = { ...request.target, message, chatId: st.getCurrentChatId(), chatLength: st.chat.length, swipeId: message.swipe_id };
@@ -890,7 +904,7 @@ function mount() {
                 results: {}, selected: [], approved: [],
             };
             showTeamControls(true);
-            void runTeam('review', source);
+            void runTeam(team.stages[0], source);
         } catch (error) {
             setStatus(error.message);
         }
@@ -905,8 +919,8 @@ function mount() {
         const job = team;
         try {
             checkPolishSource(job.snapshot);
-            if (chatIsGenerating(context())) throw new Error('请等当前回复生成完毕，再继续多角色大修。');
-            if (source.polishNotes !== job.notes) throw new Error('本次精修要求已经修改。请重新开始多角色大修，让各阶段使用同一要求。');
+            if (chatIsGenerating(context())) throw new Error('请等当前回复生成完毕，再继续重写。');
+            if (source.polishNotes !== job.notes) throw new Error('本次要求已经修改。请重新开始，让各阶段使用同一要求。');
         } catch (error) {
             setStatus(error.message);
             return;
@@ -938,8 +952,10 @@ function mount() {
                 updateBusy();
                 setStatus(`正在进行${REVISION_ROLES[stage]}…`);
                 const writing = stage === 'write';
-                const { plan } = job.results;
-                const prompt = writing ? prepareReplyPolish({
+                const { plan, extract } = job.results;
+                const prompt = stage === 'extract' ? buildPlotExtraction(job.request)
+                    : writing && job.mode === 'rewrite' ? buildStoryRewrite(extract, source)
+                    : writing ? prepareReplyPolish({
                     ...source, rewrite: true, teamPlan: {
                         materials: job.request.revisionMaterials,
                         outline: plan && { opening: plan.opening, beats: plan.beats },
@@ -949,7 +965,7 @@ function mount() {
                 lastPrompt = { mode: POLISH_MODE, draft: source.draft, messages: prompt };
                 showPrompt(prompt);
                 const result = await requestPolish(prompt, source, job.snapshot, signal, {
-                    short: !writing,
+                    short: !writing && stage !== 'extract',
                     onText: writing ? text => {
                         if (!isCurrent()) return;
                         const { prose } = splitDeepRevisionOutput(text, true);
@@ -963,11 +979,13 @@ function mount() {
                 if (writing) {
                     const { prose } = splitDeepRevisionOutput(parsePolishedReply(result.text, result.finishReason, result.outputTokens));
                     if (!prose.trim()) throw new Error('模型未返回完整正文。');
+                    if (extract) verifyStoryLocks(prose, extract);
                     job.writeSource = { polishExample: source.polishExample, polishNotes: job.notes, rewrite: true };
                     showTeamDraft(prose);
                     continue;
                 }
-                const record = parseRevisionStage(stage, job.mode, result, job.request.narrative, job.results.write, job.results);
+                const record = stage === 'extract' ? parseExtractedPlot(result, job.request.narrative, job.notes)
+                    : parseRevisionStage(stage, job.mode, result, job.request.narrative, job.results.write, job.results);
                 job.results[stage] = record;
                 if (stage === 'verify' && record.accepted) showTeamDraft(job.results.repair.text);
                 if (stage === 'plan' && record.choices.length) {
@@ -978,6 +996,7 @@ function mount() {
             }
             if (stages.at(-1) === 'review') setStatus('剧情审校已完成。');
             if (stages.at(-1) === 'plan') setStatus('剧情编辑已完成。');
+            if (stages.at(-1) === 'extract') setStatus('剧情已提取。');
             const { audit, verify } = job.results;
             if (verify) {
                 if (verify.introduced.length) {
@@ -1011,7 +1030,7 @@ function mount() {
             const text = restoreRevisionComponents(prose, job.snapshot.revisionComponents);
             job.results.write = prose;
             clearStreamPreview();
-            showPolishedVersion(job.snapshot, job.writeSource, text, true);
+            showPolishedVersion(job.snapshot, job.writeSource, text, job.mode === 'rewrite' ? '重写' : '多角色大修');
         }
     }
 
@@ -1023,16 +1042,16 @@ function mount() {
         }
     }
 
-    function showPolishedVersion(target, source, text, multiRole = false) {
-        const { polishExample, polishNotes: notes, rewrite } = source;
+    function showPolishedVersion(target, source, text, method = '精修') {
+        const { polishExample, polishNotes: notes } = source;
         if (comparison?.target.message !== target.message || comparison.target.text !== target.text
             || comparison.target.rawText !== target.rawText || comparison.target.swipeId !== target.swipeId || comparison.notes !== notes) {
             comparison = { target, notes, versions: new Map() };
         }
-        const versionName = `${polishExample ? '有示范' : '无示范'}${multiRole ? '多角色大修稿' : rewrite ? '大修稿' : '稿'}`;
+        const versionName = `${polishExample ? '有示范' : '无示范'}${method === '精修' ? '' : method}稿`;
         comparison.versions.set(versionName, text);
         renderPolishComparison(comparison, versionName);
-        setStatus(multiRole ? '多角色大修稿已生成。' : rewrite ? '大修稿已生成。' : '精修稿已生成。');
+        setStatus(`${method}稿已生成。`);
     }
 
     function renderPolishComparison(result, versionName) {
