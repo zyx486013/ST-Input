@@ -317,12 +317,12 @@
 
 #st-input-panel .st-input-style-mode input { margin: 0; }
 
-#st-input-panel [data-st="polish-diction"][aria-pressed="true"] {
+#st-input-panel :is([data-st="polish-diction"], [data-st="logic-checks"] button)[aria-pressed="true"] {
     border-color: currentColor;
     font-weight: 700;
 }
 
-#st-input-panel [data-st="polish-diction"][aria-pressed="true"]::before {
+#st-input-panel :is([data-st="polish-diction"], [data-st="logic-checks"] button)[aria-pressed="true"]::before {
     content: '✓ ';
 }
 

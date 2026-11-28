@@ -80,3 +80,13 @@ test('distinguishes a truncated response, reasoning-only response, and empty res
     assert.throws(() => parseLogicFindings({ text: '' }, check), /没有返回逻辑检查正文/);
     assert.equal(parseLogicFindings({ text: fixture(contradiction), finishReason: 'stop' }, check).length, 1);
 });
+
+test('limits the prompt to selected checks and accepts standalone extra instructions', () => {
+    const source = { history, historyCount: 2, logicChecks: ['对白'], logicNotes: '只看第二轮问答' };
+    const check = prepareLogicCheck(source);
+    assert.deepEqual(check.categories, ['对白失真', '额外要求']);
+    assert.match(check.prompt[1].content, /【本次检查要求】\n只看第二轮问答/);
+    assert.doesNotMatch(check.prompt[0].content, /AI八股|跟踪站位/);
+    assert.deepEqual(prepareLogicCheck({ ...source, logicChecks: [] }).categories, ['额外要求']);
+    assert.throws(() => prepareLogicCheck({ ...source, logicChecks: [], logicNotes: '' }), /请选择/);
+});

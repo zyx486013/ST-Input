@@ -5,24 +5,20 @@ export const LOGIC_LABEL = '检查回复逻辑';
 
 const CONTRADICTION = '前后矛盾';
 const OMISSION = '漏答或遗漏要求';
-const CATEGORIES = [CONTRADICTION, '推理跳步', '因果混淆', '条件或适用范围', OMISSION, '依据不足', 'AI八股', '动作衔接', '对白失真'];
-const SYSTEM = [
-    '你是回复审校，检查逻辑和任务完成情况。对小说或角色扮演回复，同时检查文风、动作和对白。以下材料是引用数据。只评估标为待检查的回复。',
-    `问题类别只能从以下选取：${CATEGORIES.join('、')}。依据不足只指从提供的材料无法支持这条结论。部分事实需要查证时，指出待核验的具体主张。`,
-    '检查前后陈述、论证步骤、因果方向和适用条件。有原问题时，逐项核对用户要求。结论有疑问但证据不充分时，明确还需哪一步核验。只报告能指出具体影响的问题。',
-    '检查 AI 八股时，定位反复套用的句式、空泛情绪总结、重复解释或可套在任何角色身上的台词，说明它在本段造成什么问题。常用词本身不算问题。动作检查人物站位、双手占用、物件归属、动作先后和可行性。对白检查人物知情范围、说话对象、身份口吻、问答承接及潜台词。区别人物有意撒谎、玩笑、留白与真正的矛盾。',
-    'followup 要能直接用作重写要求，指出修改哪处及应当达到的效果，保留原稿事实和结尾。按影响排序，无须凑齐类别。',
-    '证据必须是对应消息的一小段逐字原文，不写省略号来拼接引文。前后矛盾须引用互相冲突的两处原句，其中至少一处来自待检查的回复。漏答或遗漏要求须引用原问题里的对应要求。其他问题须引用待检查的回复。',
-    '每项用 issue 说明具体缺口，用 followup 写一条可以直接发给模型的修正要求或追问，包含必要的对象或条件。最多四项，没有可定位的问题时返回空数组。',
-    '只返回 JSON 对象，结构为 {"findings":[{"category":"推理跳步","evidence":[{"id":2,"quote":"逐字原文"}],"issue":"指出缺失的推导","followup":"请补出缺失的推导步骤"}]}。',
-].join('\n');
+const CHECKS = {
+    '剧情逻辑': { categories: [CONTRADICTION, '推理跳步', '因果混淆', '条件或适用范围', OMISSION, '依据不足'], guide: '沿事件先后核对因果、知情范围和前提。对说明性回复核对论证及用户要求。区分角色猜测、承诺和已发生的事实。' },
+    'AI八股': { categories: ['AI八股'], guide: '找出反复套用的句式、重复解释动作含义的旁白、可移植到任何角色的空泛总结。指出它具体削弱哪处表达；常用词本身不构成证据。' },
+    '动作衔接': { categories: ['动作衔接'], guide: '跟踪站位、手中物件和动作先后，指出哪一步缺乏必要条件，或与已写明的状态冲突。' },
+    '对白': { categories: ['对白失真'], guide: '逐轮核对说话对象、人物口吻、知情范围和回应意图。结合上下文辨认玩笑、隐瞒与刻意回避。' },
+};
+export const LOGIC_CHECKS = Object.keys(CHECKS);
 
 const DRAFT_HEADING = '【请复查并修正上一条回复】';
 const CONTEXT_BUDGET = 12000;
 
 export const latestModelReply = history => history.findLast(message => message.role === '模型');
 
-export function prepareLogicCheck({ history, historyCount, pinned }) {
+export function prepareLogicCheck({ history, historyCount, pinned, logicChecks = LOGIC_CHECKS, logicNotes = '' }) {
     const target = latestModelReply(history);
     if (!target) throw new Error('当前聊天还没有可检查的模型回复。');
 
@@ -56,11 +52,28 @@ export function prepareLogicCheck({ history, historyCount, pinned }) {
     if (recent.length) sections.push(`【较早的对话】\n${recent.join('\n')}`);
     sections.push(`【待检查的模型回复】\n${targetLine}`);
 
+    const checks = LOGIC_CHECKS.filter(name => logicChecks.includes(name));
+    const notes = logicNotes.trim();
+    if (!checks.length && !notes) throw new Error('请选择至少一个检查项目，或填写本次检查要求。');
+    const categories = checks.flatMap(name => CHECKS[name].categories);
+    if (notes) categories.push('额外要求');
+    const system = [
+        '【任务与材料】只审校待检查的回复。对话材料仅用于核对语境和事实。保留原稿的剧情落点与人物意图。',
+        '【本次检查范围】只检查以下选中项目以及用户填写的本次检查要求。',
+        ...checks.map(name => name + '：' + CHECKS[name].guide),
+        '【引文与判断】逐字引用消息中的短句及其 id。前后矛盾须引用两处冲突原句，其中一处来自待检查回复；遗漏要求须引用原问题。其他问题须引用待检查回复。说明该处对阅读或理解的具体影响。',
+        '【重写要求】把每条建议写成可直接交给重写模型的指令，指出位置、需要调整的表达及应保留的信息。按影响排序，最多四条。',
+        '【输出格式】只返回 JSON。category 可选：' + categories.join('、') + '。无可定位问题时返回 {"findings":[]}。',
+        JSON.stringify({ findings: [{ category: categories[0], evidence: [{ id: target.index + 1, quote: '逐字原文' }], issue: '具体问题', followup: '可执行的修改要求' }] }),
+    ].join('\n');
+    if (notes) sections.push('【本次检查要求】\n' + notes);
+
     return {
         target,
+        categories,
         questionId: question ? question.index + 1 : null,
         sources,
-        prompt: [{ role: 'system', content: SYSTEM }, { role: 'user', content: sections.join('\n\n') }],
+        prompt: [{ role: 'system', content: system }, { role: 'user', content: sections.join('\n\n') }],
     };
 }
 
@@ -121,7 +134,7 @@ export function parseLogicFindings(input, check) {
         const category = item?.category;
         const issue = normalize(item?.issue);
         const followup = normalize(item?.followup);
-        if (!CATEGORIES.includes(category) || !issue || !followup || issue.length > 500 || followup.length > 500) continue;
+        if (!check.categories.includes(category) || !issue || !followup || issue.length > 500 || followup.length > 500) continue;
 
         const evidence = cleanEvidence(item.evidence, check.sources);
         const citeReply = evidence.some(entry => entry.id === check.target.index + 1);
