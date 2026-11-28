@@ -1032,6 +1032,23 @@ function mount() {
             replaceDraft(draft);
             setStatus('已加入输入框，可编辑或恢复原稿。');
         };
+        const transfer = selected => {
+            if (logicTargetChanged(target)) return;
+            const field = ui['polish-notes'];
+            const notes = appendLogicFindings(field.value, selected);
+            if (notes.length > MAX_POLISH_NOTES) {
+                setStatus(`加入后将超过 ${MAX_POLISH_NOTES} 字，请先缩短已有要求或分项加入。`);
+                return;
+            }
+            field.value = notes;
+            ui['polish-rewrite'].checked = true;
+            ui['polish-rewrite'].dispatchEvent(new Event('change'));
+            config.workspace = POLISH_MODE;
+            saveSettings();
+            renderWorkspace();
+            field.focus();
+            setStatus('检查结果已加入本次精修要求，可编辑后开始重写。');
+        };
         const stack = element('div', null, 'st-input-config');
         for (const finding of findings) {
             const group = element('fieldset', null, 'st-input-question');
@@ -1043,12 +1060,13 @@ function mount() {
             }
             group.append(
                 element('p', finding.issue, 'st-input-logic-note'),
-                element('p', finding.followup, 'st-input-logic-note'),
+                ...(finding.followup ? [element('p', finding.followup, 'st-input-logic-note')] : []),
+                button('加入重写要求', () => transfer([finding])),
                 button('加入草稿', () => insert([finding])),
             );
             stack.append(group);
         }
-        if (findings.length > 1) stack.append(button('全部加入草稿', () => insert(findings)));
+        if (findings.length > 1) stack.append(button('全部加入重写要求', () => transfer(findings)), button('全部加入草稿', () => insert(findings)));
         output().result.replaceChildren(stack);
     }
 
