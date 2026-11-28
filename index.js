@@ -722,6 +722,7 @@ function mount() {
             updateBusy();
             setStatus('正在处理…');
             const signal = pending.controller.signal;
+            const logic = source.mode === LOGIC_MODE;
             const result = polish ? await requestPolish(prompt, source, target, signal, {
                 onText: text => {
                     if (currentRevision === revision && !signal.aborted) previewStreamText(text);
@@ -733,7 +734,11 @@ function mount() {
                     }
                     previewReasoning(text);
                 },
-            }) : await complete(prompt, config.connection, config.profileId, signal, target ? 2400 : undefined);
+            }) : await complete(prompt, config.connection, config.profileId, signal, logic ? 4096 : target ? 2400 : undefined, logic ? {
+                withDetails: true,
+                requestedPolishTokens: config.connection === 'custom' ? 4096 : undefined,
+                yaml: SillyTavern.libs?.yaml,
+            } : undefined);
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
             if (polish) {
                 checkPolishSource(snapshot);
