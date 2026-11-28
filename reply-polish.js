@@ -6,7 +6,7 @@ export const POLISH_MODE = 'polish';
 export const POLISH_LABEL = '精修回复';
 export const MAX_EXAMPLE = 32000;
 export const MAX_EXAMPLE_NAME = 60;
-export const MAX_POLISH_NOTES = 1200;
+export const MAX_POLISH_NOTES = 12000;
 
 export function migratePolishExample(settings) {
     if (!Object.hasOwn(settings, 'polishExample')) return false;

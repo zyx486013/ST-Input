@@ -57,3 +57,17 @@ test('appends selected corrections without replacing draft text or duplicating g
     assert.equal(withBoth.match(/【请复查并修正上一条回复】/g).length, 1);
     assert.match(withBoth, /补充该设置在周末生效的条件/);
 });
+
+test('accepts fenced reports with a preamble, arrays, and plain Markdown', () => {
+    const check = prepareLogicCheck({ history, historyCount: 2 });
+    const style = { ...contradiction, category: 'AI八股' };
+    for (const reply of ['报告如下：\n```json\n' + fixture(style) + '\n```', JSON.stringify([style])]) {
+        assert.equal(parseLogicFindings(reply, check)[0].category, 'AI八股');
+    }
+    const report = '### 动作衔接\n人物仍拿着杯子，下一句却用同一只手开门。';
+    const findings = parseLogicFindings(report, check);
+    const inserted = appendLogicFindings('保留结尾', findings);
+    assert.ok(inserted.includes(report));
+    assert.equal(appendLogicFindings(inserted, findings), inserted);
+    assert.throws(() => parseLogicFindings('{"findings":[', check), /不完整/);
+});
