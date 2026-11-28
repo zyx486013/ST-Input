@@ -118,6 +118,19 @@ function mount() {
                         <button class="menu_button st-input-primary" type="button" data-st="logic">检查回复逻辑</button>
                         <button class="menu_button" type="button" data-st="review">${REVIEW_LABEL}</button>
                     </div>
+                    <details>
+                        <summary>逻辑检查参数</summary>
+                        <div class="st-input-config">
+                            <label>输出上限（tokens） <input type="number" class="text_pole" min="1" max="${MAX_POLISH_OUTPUT_TOKENS}" step="1" placeholder="自动（至少 8192）" data-st="logic-budget"></label>
+                            <label>推理强度 <select class="text_pole" data-st="logic-effort">
+                                <option value="">沿用连接</option>
+                                <option value="low">低（low）</option>
+                                <option value="medium">中（medium）</option>
+                                <option value="high">高（high）</option>
+                                <option value="max">最高（max）</option>
+                            </select></label>
+                        </div>
+                    </details>
                     <details data-st="guidance" hidden>
                         <summary data-st="guidance-title">写作指导</summary>
                         <div class="st-input-config">
@@ -723,6 +736,11 @@ function mount() {
             setStatus('正在处理…');
             const signal = pending.controller.signal;
             const logic = source.mode === LOGIC_MODE;
+            const logicBudget = logic && ui['logic-budget'].value ? Number(ui['logic-budget'].value) : undefined;
+            if (logicBudget !== undefined && (!Number.isInteger(logicBudget) || logicBudget < 1 || logicBudget > MAX_POLISH_OUTPUT_TOKENS)) {
+                throw new Error(`逻辑检查输出上限须为 1 到 ${MAX_POLISH_OUTPUT_TOKENS} 的整数。`);
+            }
+            const logicEffort = logic ? ui['logic-effort'].value : '';
             const result = polish ? await requestPolish(prompt, source, target, signal, {
                 onText: text => {
                     if (currentRevision === revision && !signal.aborted) previewStreamText(text);
@@ -734,9 +752,10 @@ function mount() {
                     }
                     previewReasoning(text);
                 },
-            }) : await complete(prompt, config.connection, config.profileId, signal, logic ? 4096 : target ? 2400 : undefined, logic ? {
+            }) : await complete(prompt, config.connection, config.profileId, signal, logic ? 8192 : target ? 2400 : undefined, logic ? {
                 withDetails: true,
-                requestedPolishTokens: config.connection === 'custom' ? 4096 : undefined,
+                requestedPolishTokens: logicBudget ?? (config.connection === 'custom' || (config.connection !== 'profile' && st.mainApi !== 'openai') ? 8192 : undefined),
+                parameters: logicEffort ? { reasoning_effort: logicEffort } : {},
                 yaml: SillyTavern.libs?.yaml,
             } : undefined);
             if (currentRevision !== revision || chatId !== context().getCurrentChatId()) return;
@@ -1315,6 +1334,17 @@ function mount() {
         renderPolishExampleOptions();
         saveSettings();
         setStatus('已删除保存的示范，正文保留在编辑框中。');
+    });
+    ui['logic-budget'].value = config.logicMaxTokens ?? '';
+    ui['logic-effort'].value = config.logicReasoningEffort ?? '';
+    ui['logic-budget'].addEventListener('change', () => {
+        if (!ui['logic-budget'].validity.valid) return;
+        config.logicMaxTokens = ui['logic-budget'].value ? Number(ui['logic-budget'].value) : undefined;
+        saveSettings();
+    });
+    ui['logic-effort'].addEventListener('change', () => {
+        config.logicReasoningEffort = ui['logic-effort'].value;
+        saveSettings();
     });
     ui['polish-budget'].value = config.polishMaxTokens ?? '';
     ui['polish-stream'].checked = config.polishStreaming !== false;
