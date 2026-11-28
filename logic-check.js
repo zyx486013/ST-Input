@@ -83,7 +83,18 @@ function cleanEvidence(items, sources) {
 }
 
 export function parseLogicFindings(input, check) {
-    const visible = typeof input === 'string' ? input.replace(/<think\b[^>]*>[\s\S]*?(?:<\/think>|$)/gi, '') : '';
+    const { text: body, finishReason, reasoning, outputTokens } = typeof input === 'string' ? { text: input } : input ?? {};
+    const visible = typeof body === 'string' ? body.replace(/<think\b[^>]*>[\s\S]*?(?:<\/think>|$)/gi, '') : '';
+    if (/^(length|max_(?:output_)?tokens|limit)$/i.test(finishReason ?? '')) {
+        const budget = outputTokens ? `（${outputTokens} tokens）` : '';
+        throw new Error(`逻辑检查达到输出上限${budget}。请调高连接的回复长度或降低模型的推理强度后重试。`);
+    }
+    if (!visible.trim()) {
+        const onlyReasoning = reasoning?.trim() || /<think\b/i.test(body ?? '');
+        throw new Error(onlyReasoning
+            ? '模型只返回了思考内容，没有生成逻辑检查报告。请降低推理强度或调高连接的回复长度后重试。'
+            : '连接已响应，但没有返回逻辑检查正文。请重试或切换连接。');
+    }
     const text = jsonCandidate(visible);
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
     const wrapped = text.match(/\{[\s\S]*\}/);

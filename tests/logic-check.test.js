@@ -71,3 +71,12 @@ test('accepts fenced reports with a preamble, arrays, and plain Markdown', () =>
     assert.equal(appendLogicFindings(inserted, findings), inserted);
     assert.throws(() => parseLogicFindings('{"findings":[', check), /不完整/);
 });
+
+test('distinguishes a truncated response, reasoning-only response, and empty response', () => {
+    const check = prepareLogicCheck({ history, historyCount: 2 });
+    assert.throws(() => parseLogicFindings({ text: '', finishReason: 'length', outputTokens: 4096 }, check), /4096 tokens/);
+    assert.throws(() => parseLogicFindings({ text: '', reasoning: '正在分析' }, check), /只返回了思考/);
+    assert.throws(() => parseLogicFindings({ text: '<think>正在分析</think>' }, check), /只返回了思考/);
+    assert.throws(() => parseLogicFindings({ text: '' }, check), /没有返回逻辑检查正文/);
+    assert.equal(parseLogicFindings({ text: fixture(contradiction), finishReason: 'stop' }, check).length, 1);
+});
