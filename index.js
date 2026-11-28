@@ -6,7 +6,7 @@ import { completeWithSillyTavern } from './connections.js';
 import { TIMEOUT_524_MESSAGE } from './polish-stream.js';
 import { restoreRevisionComponents } from './revision-components.js';
 import { buildRewritePrompt, preparePlotRequest, readRewriteText } from './story-rewrite.js';
-import { appendLogicFindings, latestModelReply, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
+import { appendLogicFindings, latestModelReply, LOGIC_CHECKS, LOGIC_LABEL, LOGIC_MODE, parseLogicFindings, prepareLogicCheck } from './logic-check.js';
 import { buildPrompt, getChatMessages, MAX_DRAFT, MODES, parseResult, REVIEW_LABEL, REVIEW_MODE } from './prompts.js';
 import { MAX_POLISH_OUTPUT_TOKENS, MAX_STANDARD_MESSAGE, validatePolishParameters } from './server/polish-parameters.mjs';
 import { MAX_EXAMPLE, MAX_EXAMPLE_NAME, MAX_POLISH_NOTES, migratePolishExample, parsePolishedReply, POLISH_LABEL, POLISH_MODE, prepareReplyPolish, samePolishTarget, writePolishedReply } from './reply-polish.js';
@@ -114,6 +114,13 @@ function mount() {
                     <div class="st-input-actions" data-st="actions"></div>
                 </section>
                 <section data-workspace="logic" hidden>
+                    <fieldset class="st-input-config">
+                        <legend>检查项目（可多选）</legend>
+                        <div class="st-input-actions" data-st="logic-checks"></div>
+                        <label>本次检查要求 <small>选填</small>
+                            <textarea class="text_pole st-input-draft" rows="2" maxlength="2400" data-st="logic-notes" placeholder="例如：重点看小鹿有没有说出她当时还不知道的事"></textarea>
+                        </label>
+                    </fieldset>
                     <div class="st-input-actions">
                         <button class="menu_button st-input-primary" type="button" data-st="logic">检查回复逻辑</button>
                         <button class="menu_button" type="button" data-st="review">${REVIEW_LABEL}</button>
@@ -370,6 +377,24 @@ function mount() {
     const cancel = button('取消', () => clearRequest('已取消。', pending?.mode === POLISH_MODE));
     cancel.hidden = true;
     ui['request-actions'].append(cancel, undo);
+    const selectedChecks = new Set(config.logicChecks ?? LOGIC_CHECKS);
+    function refreshLogicPreview() {
+        if (lastPrompt?.mode === LOGIC_MODE) lastPrompt = undefined;
+        refreshPreview();
+    }
+    for (const name of LOGIC_CHECKS) {
+        const toggle = button(name, () => {
+            if (selectedChecks.has(name)) selectedChecks.delete(name);
+            else selectedChecks.add(name);
+            toggle.setAttribute('aria-pressed', String(selectedChecks.has(name)));
+            config.logicChecks = [...selectedChecks];
+            saveSettings();
+            refreshLogicPreview();
+        });
+        toggle.setAttribute('aria-pressed', String(selectedChecks.has(name)));
+        ui['logic-checks'].append(toggle);
+    }
+    ui['logic-notes'].addEventListener('input', refreshLogicPreview);
     ui.logic.addEventListener('click', () => start(LOGIC_MODE));
     ui.review.addEventListener('click', () => start(REVIEW_MODE));
     for (const view of views) {
@@ -509,6 +534,10 @@ function mount() {
         const history = config.history || mode === LOGIC_MODE || mode === POLISH_MODE || mode === REVIEW_MODE ? getChatMessages(st.chat) : [];
         const pinned = config.history && ui.reference.value ? Number(ui.reference.value) : undefined;
         const source = { mode, draft: textarea.value, history, historyCount: config.history ? config.historyCount : 0, pinned };
+        if (mode === LOGIC_MODE) {
+            source.logicChecks = [...selectedChecks];
+            source.logicNotes = ui['logic-notes'].value;
+        }
         if (mode in MODES) {
             const guidance = readGuidance(st.chatMetadata);
             source.guidance = guidance.enabled ? guidance.items : [];
@@ -1469,6 +1498,7 @@ function mount() {
         undoReply = undefined;
         undo.hidden = true;
         ui['polish-undo'].hidden = true;
+        ui['logic-notes'].value = '';
         ui['polish-notes'].value = '';
         ui.guidance.open = false;
         renderGuidance();
